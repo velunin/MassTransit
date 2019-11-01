@@ -1,23 +1,11 @@
-// Copyright 2007-2016 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.RabbitMqTransport.Contexts
 {
     using System;
     using System.Threading;
     using System.Threading.Tasks;
+    using Configuration;
+    using Context;
     using GreenPipes;
-    using GreenPipes.Payloads;
-    using Logging;
     using RabbitMQ.Client;
     using Topology;
     using Util;
@@ -28,49 +16,61 @@ namespace MassTransit.RabbitMqTransport.Contexts
         ConnectionContext,
         IAsyncDisposable
     {
-        static readonly ILog _log = Logger.Get<RabbitMqConnectionContext>();
-
         readonly IConnection _connection;
         readonly LimitedConcurrencyLevelTaskScheduler _taskScheduler;
 
-        public RabbitMqConnectionContext(IConnection connection, RabbitMqHostSettings hostSettings, IRabbitMqHostTopology topology, string description,
-            CancellationToken cancellationToken)
-            : base(new PayloadCache(), cancellationToken)
+        public RabbitMqConnectionContext(IConnection connection, IRabbitMqHostConfiguration configuration, IRabbitMqHostTopology hostTopology,
+            string description, CancellationToken cancellationToken)
+            : base(cancellationToken)
         {
             _connection = connection;
-            HostSettings = hostSettings;
-            Topology = topology;
 
             Description = description;
+            HostAddress = configuration.HostAddress;
+            PublisherConfirmation = configuration.PublisherConfirmation;
+            Topology = hostTopology;
+
+            StopTimeout = TimeSpan.FromSeconds(30);
 
             _taskScheduler = new LimitedConcurrencyLevelTaskScheduler(1);
 
             connection.ConnectionShutdown += OnConnectionShutdown;
         }
 
-        public IRabbitMqHostTopology Topology { get; }
-        public RabbitMqHostSettings HostSettings { get; }
+        IConnection ConnectionContext.Connection => _connection;
         public string Description { get; }
-        public Uri HostAddress => HostSettings.HostAddress;
+        public Uri HostAddress { get; }
+        public bool PublisherConfirmation { get; }
+        public TimeSpan StopTimeout { get; }
+        public IRabbitMqHostTopology Topology { get; }
 
-        public Task<IModel> CreateModel()
+        public async Task<IModel> CreateModel(CancellationToken cancellationToken)
         {
-            return Task.Factory.StartNew(() => _connection.CreateModel(), CancellationToken, TaskCreationOptions.None, _taskScheduler);
+            using (var tokenSource = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken, cancellationToken))
+            {
+                var model = await Task.Factory.StartNew(() => _connection.CreateModel(), tokenSource.Token, TaskCreationOptions.None, _taskScheduler)
+                    .ConfigureAwait(false);
+
+                return model;
+            }
         }
 
-        IConnection ConnectionContext.Connection => _connection;
+        async Task<ModelContext> ConnectionContext.CreateModelContext(CancellationToken cancellationToken)
+        {
+            var model = await CreateModel(cancellationToken).ConfigureAwait(false);
+
+            return new RabbitMqModelContext(this, model, cancellationToken);
+        }
 
         Task IAsyncDisposable.DisposeAsync(CancellationToken cancellationToken)
         {
             _connection.ConnectionShutdown -= OnConnectionShutdown;
 
-            if (_log.IsDebugEnabled)
-                _log.DebugFormat("Disconnecting: {0}", Description);
+            LogContext.Debug?.Log("Disconnecting: {Host}", Description);
 
             _connection.Cleanup(200, "Connection Disposed");
 
-            if (_log.IsDebugEnabled)
-                _log.DebugFormat("Disconnected: {0}", Description);
+            LogContext.Debug?.Log("Disconnected: {Host}", Description);
 
             return TaskUtil.Completed;
         }

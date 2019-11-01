@@ -3,6 +3,8 @@
 The following example shows how to configure a simple StructureMap container, and include the bus in the
 container. The two bus interfaces, `IBus` and `IBusControl`, are included.
 
+A sample project for the container registration code is available on [GitHub](https://github.com/MassTransit/Sample-Containers).
+
 <div class="alert alert-info">
 <b>Note:</b>
     Consumers should not typically depend upon <i>IBus</i> or <i>IBusControl</i>. A consumer should use the <i>ConsumeContext</i>
@@ -10,42 +12,46 @@ container. The two bus interfaces, `IBus` and `IBusControl`, are included.
     messages can be tracked between consumers, and are sent from the proper address.
 </div>
 
-```csharp
+ ```csharp
 public static void Main(string[] args)
 {
     var container = new Container(cfg =>
     {
-        // register each consumer
-        cfg.ForConcreteType<UpdateCustomerAddressConsumer>();
-
-        //or use StructureMap's excellent scanning capabilities
-    });
-
-    var busControl = Bus.Factory.CreateUsingRabbitMq(cfg =>
-    {
-        var host = cfg.Host(new Uri("rabbitmq://localhost/"), h =>
+        cfg.AddMassTransit(x =>
         {
-            h.Username("guest");
-            h.Password("guest");
+            // add a specific consumer
+            x.AddConsumer<UpdateCustomerAddressConsumer>();
+
+            // add all consumers in the specified assembly
+            x.AddConsumers(Assembly.GetExecutingAssembly());
+
+            // add consumers by type
+            x.AddConsumers(typeof(ConsumerOne), typeof(ConsumerTwo));
+
+            // add the bus to the container, may need to create Local function
+            x.AddBus(context => Bus.Factory.CreateUsingRabbitMq(cfg =>
+            {
+                var host = cfg.Host("localhost/");
+
+                cfg.ReceiveEndpoint("customer_update", ec =>
+               {
+                    // Configure a single consumer
+                    ec.ConfigureConsumer<UpdateCustomerConsumer>(context);
+
+                    // configure all consumers
+                    ec.ConfigureConsumers(context);
+
+                    // configure consumer by type
+                    ec.ConfigureConsumer(typeof(ConsumerOne), context);
+                });
+
+                // or, configure the endpoints by convention
+                cfg.ConfigureEndpoints(context);
+            });
         });
-
-        sbc.ReceiveEndpoint("customer_update_queue", ec =>
-        {
-            // if only one consumer in the consumer for this queue
-            ec.LoadFrom(container);
-
-            // otherwise, be smart, register explicitly
-            ec.Consumer<UpdateCustomerConsumer>(container);
-        })
     });
 
-    container.Configure(cfg =>
-    {
-        For<IBusControl>()
-            .Use(busControl);
-        Forward<IBusControl, IBus>();
-    });
-
+    IBusControl busControl = container.GetInstance<IBusControl>();
     busControl.Start();
 }
 ```

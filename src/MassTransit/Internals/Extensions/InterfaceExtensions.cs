@@ -16,6 +16,7 @@ namespace MassTransit.Internals.Extensions
     using System.Collections.Generic;
     using System.Linq;
     using System.Reflection;
+    using System.Threading.Tasks;
     using Reflection;
 
 
@@ -37,6 +38,7 @@ namespace MassTransit.Internals.Extensions
         {
             if (type == null)
                 throw new ArgumentNullException(nameof(type));
+
             if (interfaceType == null)
                 throw new ArgumentNullException(nameof(interfaceType));
 
@@ -59,6 +61,7 @@ namespace MassTransit.Internals.Extensions
         {
             if (type == null)
                 throw new ArgumentNullException(nameof(type));
+
             if (interfaceType == null)
                 throw new ArgumentNullException(nameof(interfaceType));
 
@@ -69,10 +72,47 @@ namespace MassTransit.Internals.Extensions
             return _cache.Get(type, interfaceType);
         }
 
+        public static bool IsTask(this Type type, out Type taskType)
+        {
+            if (ClosesType(type, typeof(Task<>), out Type closedType))
+            {
+                Type[] arguments = closedType.GetGenericArguments();
+                for (int i = 0; i < arguments.Length; i++)
+                {
+                    if (arguments[i].IsGenericParameter)
+                        continue;
+
+                    taskType = arguments[i];
+                    return true;
+                }
+            }
+
+            taskType = default;
+            return false;
+        }
+
         public static bool ClosesType(this Type type, Type openType)
+        {
+            return ClosesType(type, openType, out Type _);
+        }
+
+        public static bool ClosesType(this Type type, Type openType, out Type[] arguments)
+        {
+            if (ClosesType(type, openType, out Type closedType))
+            {
+                arguments = closedType.GetGenericArguments().Where(x => !x.IsGenericParameter).ToArray();
+                return true;
+            }
+
+            arguments = default;
+            return false;
+        }
+
+        public static bool ClosesType(this Type type, Type openType, out Type closedType)
         {
             if (type == null)
                 throw new ArgumentNullException(nameof(type));
+
             if (openType == null)
                 throw new ArgumentNullException(nameof(openType));
 
@@ -86,10 +126,20 @@ namespace MassTransit.Internals.Extensions
 
                 Type interfaceType = type.GetInterface(openType);
                 if (interfaceType == null)
+                {
+                    closedType = default;
                     return false;
+                }
 
                 TypeInfo typeInfo = interfaceType.GetTypeInfo();
-                return !typeInfo.IsGenericTypeDefinition && !typeInfo.ContainsGenericParameters;
+                if (!typeInfo.IsGenericTypeDefinition && !typeInfo.ContainsGenericParameters)
+                {
+                    closedType = typeInfo;
+                    return true;
+                }
+
+                closedType = default;
+                return false;
             }
 
             Type baseType = type;
@@ -97,21 +147,40 @@ namespace MassTransit.Internals.Extensions
             {
                 TypeInfo baseTypeInfo = baseType.GetTypeInfo();
                 if (baseTypeInfo.IsGenericType && baseTypeInfo.GetGenericTypeDefinition() == openType)
-                    return !baseTypeInfo.IsGenericTypeDefinition && !baseTypeInfo.ContainsGenericParameters;
+                {
+                    if (!baseTypeInfo.IsGenericTypeDefinition && !baseTypeInfo.ContainsGenericParameters)
+                    {
+                        closedType = baseTypeInfo;
+                        return true;
+                    }
+
+                    closedType = default;
+                    return false;
+                }
 
                 if (!baseTypeInfo.IsGenericType && baseType == openType)
+                {
+                    closedType = baseTypeInfo;
                     return true;
+                }
 
                 baseType = baseTypeInfo.BaseType;
             }
 
+            closedType = default;
             return false;
+        }
+
+        public static Type GetClosingArgument(this Type type, Type openType)
+        {
+            return GetClosingArguments(type, openType).Single();
         }
 
         public static IEnumerable<Type> GetClosingArguments(this Type type, Type openType)
         {
             if (type == null)
                 throw new ArgumentNullException(nameof(type));
+
             if (openType == null)
                 throw new ArgumentNullException(nameof(openType));
 
@@ -145,6 +214,5 @@ namespace MassTransit.Internals.Extensions
 
             throw new ArgumentException("Could not find open type in type: " + type.Name);
         }
-
     }
 }

@@ -1,23 +1,27 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../../netfx.props" />
+
   <PropertyGroup>
-    <TargetFramework>net461</TargetFramework>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!--<SignAssembly>true</SignAssembly>
-    <AssemblyOriginatorKeyFile>..\..\..\MassTransit.snk</AssemblyOriginatorKeyFile>-->
+    <TargetFrameworks>net461</TargetFrameworks>
   </PropertyGroup>
+
   <PropertyGroup>
     <PackageId>MassTransit.DapperIntegration</PackageId>
     <Title>MassTransit.DapperIntegration</Title>
-    <Description>MassTransit Dapper support; $(Description)</Description>
-    <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\MassTransit.DapperIntegration.xml</DocumentationFile>
+    <PackageTags>MassTransit;Dapper</PackageTags>
+    <Description>MassTransit Dapper persistence support; $(Description)</Description>
   </PropertyGroup>
+
   <ItemGroup>
-    <PackageReference Include="dapper.contrib" Version="1.50.5" />
+      <PackageReference Include="dapper.contrib" Version="1.60.1" />
+      <PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.0.0-*" PrivateAssets="All" />
   </ItemGroup>
+
   <ItemGroup>
-    <ProjectReference Include="..\..\MassTransit\MassTransit.csproj" />
+      <ProjectReference Include="..\..\MassTransit\MassTransit.csproj" />
   </ItemGroup>
+
   <ItemGroup>
-    <Reference Include="System.Transactions" />
+      <Reference Include="System.Transactions" />
   </ItemGroup>
 </Project>

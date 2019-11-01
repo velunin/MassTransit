@@ -1,38 +1,59 @@
-﻿// Copyright 2007-2017 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.Azure.ServiceBus.Core.Topology.Topologies
+﻿namespace MassTransit.Azure.ServiceBus.Core.Topology.Topologies
 {
+    using System;
     using System.Text;
+    using Configuration;
+    using Configuration.Configurators;
     using Core.Configuration;
     using MassTransit.Topology.Topologies;
-    using Specifications;
-    using Util;
+    using Metadata;
+    using Transports;
 
 
     public class ServiceBusHostTopology :
         HostTopology,
         IServiceBusHostTopology
     {
-        readonly IServiceBusTopologyConfiguration _topologyConfiguration;
+        readonly IServiceBusTopologyConfiguration _configuration;
+        readonly Uri _hostAddress;
+        readonly IMessageNameFormatter _messageNameFormatter;
 
-        public ServiceBusHostTopology(IServiceBusTopologyConfiguration topologyConfiguration)
-            : base(topologyConfiguration)
+        public ServiceBusHostTopology(IServiceBusTopologyConfiguration configuration, Uri hostAddress)
+            : base(configuration)
         {
-            _topologyConfiguration = topologyConfiguration;
+            _configuration = configuration;
+            _hostAddress = hostAddress;
+
+            _messageNameFormatter = new ServiceBusMessageNameFormatter();
         }
 
-        IServiceBusPublishTopology IServiceBusHostTopology.PublishTopology => _topologyConfiguration.Publish;
-        IServiceBusSendTopology IServiceBusHostTopology.SendTopology => _topologyConfiguration.Send;
+        IServiceBusPublishTopology IServiceBusHostTopology.PublishTopology => _configuration.Publish;
+        IServiceBusSendTopology IServiceBusHostTopology.SendTopology => _configuration.Send;
+
+        public Uri GetDestinationAddress(string queueName, Action<IQueueConfigurator> configure = null)
+        {
+            var configurator = new QueueConfigurator(queueName);
+
+            configure?.Invoke(configurator);
+
+            return configurator.GetQueueAddress(_hostAddress);
+        }
+
+        public Uri GetDestinationAddress(Type messageType, Action<IQueueConfigurator> configure = null)
+        {
+            var queueName = _messageNameFormatter.GetMessageName(messageType).ToString();
+
+            var configurator = new QueueConfigurator(queueName);
+
+            if (TypeMetadataCache.IsTemporaryMessageType(messageType))
+            {
+                configurator.AutoDeleteOnIdle = Defaults.TemporaryAutoDeleteOnIdle;
+            }
+
+            configure?.Invoke(configurator);
+
+            return configurator.GetQueueAddress(_hostAddress);
+        }
 
         public override string CreateTemporaryQueueName(string prefix)
         {
@@ -59,12 +80,12 @@ namespace MassTransit.Azure.ServiceBus.Core.Topology.Topologies
 
         IServiceBusMessagePublishTopology<T> IServiceBusHostTopology.Publish<T>()
         {
-            return _topologyConfiguration.Publish.GetMessageTopology<T>();
+            return _configuration.Publish.GetMessageTopology<T>();
         }
 
         IServiceBusMessageSendTopology<T> IServiceBusHostTopology.Send<T>()
         {
-            return _topologyConfiguration.Send.GetMessageTopology<T>();
+            return _configuration.Send.GetMessageTopology<T>();
         }
     }
 }

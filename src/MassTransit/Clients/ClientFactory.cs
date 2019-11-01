@@ -1,16 +1,4 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the
-// License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.Clients
+﻿namespace MassTransit.Clients
 {
     using System;
     using System.Threading;
@@ -29,12 +17,14 @@ namespace MassTransit.Clients
             _context = context;
         }
 
+        ClientFactoryContext IClientFactory.Context => _context;
+
         public RequestHandle<T> CreateRequest<T>(T message, CancellationToken cancellationToken, RequestTimeout timeout)
             where T : class
         {
             IRequestClient<T> client = CreateRequestClient<T>(timeout);
 
-            return client.Create(message, cancellationToken, timeout);
+            return client.Create(message, cancellationToken);
         }
 
         public RequestHandle<T> CreateRequest<T>(Uri destinationAddress, T message, CancellationToken cancellationToken, RequestTimeout timeout)
@@ -42,7 +32,7 @@ namespace MassTransit.Clients
         {
             IRequestClient<T> client = CreateRequestClient<T>(destinationAddress, timeout);
 
-            return client.Create(message, cancellationToken, timeout);
+            return client.Create(message, cancellationToken);
         }
 
         public RequestHandle<T> CreateRequest<T>(ConsumeContext consumeContext, T message, CancellationToken cancellationToken, RequestTimeout timeout)
@@ -50,7 +40,7 @@ namespace MassTransit.Clients
         {
             IRequestClient<T> client = CreateRequestClient<T>(consumeContext, timeout);
 
-            return client.Create(message, cancellationToken, timeout);
+            return client.Create(message, cancellationToken);
         }
 
         public RequestHandle<T> CreateRequest<T>(ConsumeContext consumeContext, Uri destinationAddress, T message, CancellationToken cancellationToken,
@@ -59,7 +49,7 @@ namespace MassTransit.Clients
         {
             IRequestClient<T> client = CreateRequestClient<T>(consumeContext, destinationAddress, timeout);
 
-            return client.Create(message, cancellationToken, timeout);
+            return client.Create(message, cancellationToken);
         }
 
         public IRequestClient<T> CreateRequestClient<T>(RequestTimeout timeout)
@@ -68,7 +58,7 @@ namespace MassTransit.Clients
             if (EndpointConvention.TryGetDestinationAddress<T>(out var destinationAddress))
                 return CreateRequestClient<T>(destinationAddress, timeout);
 
-            return new RequestClient<T>(_context, new PublishRequestSendEndpoint(_context.PublishEndpoint), timeout);
+            return new RequestClient<T>(_context, new PublishRequestSendEndpoint<T>(_context.PublishEndpoint), timeout.Or(_context.DefaultTimeout));
         }
 
         public IRequestClient<T> CreateRequestClient<T>(ConsumeContext consumeContext, RequestTimeout timeout)
@@ -77,23 +67,23 @@ namespace MassTransit.Clients
             if (EndpointConvention.TryGetDestinationAddress<T>(out var destinationAddress))
                 return CreateRequestClient<T>(consumeContext, destinationAddress, timeout);
 
-            return new RequestClient<T>(_context, new PublishRequestSendEndpoint(consumeContext), timeout);
+            return new RequestClient<T>(_context, new PublishRequestSendEndpoint<T>(consumeContext), timeout.Or(_context.DefaultTimeout));
         }
 
         public IRequestClient<T> CreateRequestClient<T>(Uri destinationAddress, RequestTimeout timeout)
             where T : class
         {
-            var requestSendEndpoint = new SendRequestSendEndpoint(_context, destinationAddress);
+            var requestSendEndpoint = new SendRequestSendEndpoint<T>(_context, destinationAddress);
 
-            return new RequestClient<T>(_context, requestSendEndpoint, timeout);
+            return new RequestClient<T>(_context, requestSendEndpoint, timeout.Or(_context.DefaultTimeout));
         }
 
         public IRequestClient<T> CreateRequestClient<T>(ConsumeContext consumeContext, Uri destinationAddress, RequestTimeout timeout)
             where T : class
         {
-            var requestSendEndpoint = new SendRequestSendEndpoint(consumeContext, destinationAddress);
+            var requestSendEndpoint = new SendRequestSendEndpoint<T>(consumeContext, destinationAddress);
 
-            return new RequestClient<T>(_context, requestSendEndpoint, timeout);
+            return new RequestClient<T>(_context, requestSendEndpoint, timeout.Or(_context.DefaultTimeout));
         }
 
         Task IAsyncDisposable.DisposeAsync(CancellationToken cancellationToken)

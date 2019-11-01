@@ -39,16 +39,16 @@ namespace MassTransit.HttpTransport.Clients
         }
 
         public IActivePipeContextAgent<ClientContext> CreateActiveContext(ISupervisor supervisor, PipeContextHandle<ClientContext> context,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
         {
             return supervisor.AddActiveContext(context, CreateSharedConnection(context.Context, cancellationToken));
         }
 
-        async Task<ClientContext> CreateSharedConnection(Task<ClientContext> context, CancellationToken cancellationToken)
+        static async Task<ClientContext> CreateSharedConnection(Task<ClientContext> context, CancellationToken cancellationToken)
         {
-            var connectionContext = await context.ConfigureAwait(false);
+            var clientContext = await context.ConfigureAwait(false);
 
-            return new SharedHttpClientContext(connectionContext, cancellationToken);
+            return new SharedHttpClientContext(clientContext, cancellationToken);
         }
     }
 }

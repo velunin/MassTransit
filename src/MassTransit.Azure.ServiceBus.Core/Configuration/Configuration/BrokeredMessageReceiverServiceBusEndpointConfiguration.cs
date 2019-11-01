@@ -1,35 +1,37 @@
 ﻿namespace MassTransit.Azure.ServiceBus.Core.Configuration
 {
     using System;
-    using Context;
+    using GreenPipes;
     using MassTransit.Configuration;
-    using Transports;
+    using MassTransit.Pipeline;
+    using MassTransit.Pipeline.Filters;
 
 
     public class BrokeredMessageReceiverServiceBusEndpointConfiguration :
         ReceiveEndpointConfiguration
     {
-        public BrokeredMessageReceiverServiceBusEndpointConfiguration(IHostConfiguration hostConfiguration, IEndpointConfiguration configuration,
-            Uri hostAddress, Uri inputAddress)
-            : base(hostConfiguration, configuration)
+        public BrokeredMessageReceiverServiceBusEndpointConfiguration(IBusConfiguration busConfiguration)
+            : base(busConfiguration)
         {
-            HostAddress = hostAddress;
-            InputAddress = inputAddress;
+            HostAddress = busConfiguration.HostConfiguration.HostAddress;
+            InputAddress = new Uri(busConfiguration.HostConfiguration.HostAddress, "no-queue-specified");
         }
 
         public override Uri HostAddress { get; }
 
         public override Uri InputAddress { get; }
 
-        protected override IReceiveEndpoint CreateReceiveEndpoint(string endpointName, IReceiveTransport receiveTransport,
-            ReceiveEndpointContext topology)
+        public override IReceivePipe CreateReceivePipe()
         {
-            throw new NotImplementedException();
-        }
+            return Receive.CreatePipe(ConsumePipe, Serialization.Deserializer, configurator =>
+            {
+                Receive.ErrorConfigurator.UseFilter(new GenerateFaultFilter());
 
-        public override IReceiveEndpoint Build()
-        {
-            throw new NotImplementedException();
+                configurator.UseRescue(Receive.ErrorConfigurator.Build(), x =>
+                {
+                    x.Ignore<OperationCanceledException>();
+                });
+            });
         }
     }
 }

@@ -1,42 +1,45 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the
-// License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.Initializers
 {
     using System;
-    using GreenPipes.Internals.Extensions;
-    using Util;
+    using System.Threading;
+    using Contexts;
+    using Factories;
+    using Metadata;
 
 
-    public class MessageFactoryCache<TMessage>
+    public static class MessageFactoryCache
+    {
+
+    }
+
+
+    public static class MessageFactoryCache<TMessage>
         where TMessage : class
     {
         public static IMessageFactory<TMessage> Factory => Cached.MessageFactory.Value;
 
+        public static TMessage CreateMessage()
+        {
+            return Cached.MessageFactory.Value.Create(new BaseInitializeContext(CancellationToken.None)).Message;
+        }
+
 
         static class Cached
         {
-            internal static readonly Lazy<IMessageFactory<TMessage>> MessageFactory = new Lazy<IMessageFactory<TMessage>>(() => CreateMessageFactory());
+            internal static readonly Lazy<IMessageFactory<TMessage>> MessageFactory = new Lazy<IMessageFactory<TMessage>>(CreateMessageFactory);
 
             static IMessageFactory<TMessage> CreateMessageFactory()
             {
                 if (!TypeMetadataCache<TMessage>.IsValidMessageType)
                     throw new ArgumentException(TypeMetadataCache<TMessage>.InvalidMessageTypeReason, nameof(TMessage));
 
-                Type implementationType = typeof(TMessage);
+                var implementationType = typeof(TMessage);
                 if (typeof(TMessage).IsInterface)
-                {
-                    implementationType = TypeCache.GetImplementationType(typeof(TMessage));
-                }
+                    implementationType = TypeMetadataCache<TMessage>.ImplementationType;
+
+                Type[] parameterTypes = new Type[0];
+                if (implementationType.GetConstructor(parameterTypes) == null)
+                    throw new ArgumentException("No default constructor available for message type", nameof(TMessage));
 
                 return (IMessageFactory<TMessage>)Activator.CreateInstance(typeof(DynamicMessageFactory<,>).MakeGenericType(typeof(TMessage),
                     implementationType));

@@ -13,6 +13,7 @@
 namespace MassTransit.AmazonSqsTransport.Topology
 {
     using System;
+    using System.Collections.Generic;
 
 
     /// <summary>
@@ -33,6 +34,16 @@ namespace MassTransit.AmazonSqsTransport.Topology
         /// If the connection is reset, messages are not purged until the service is reset
         /// </summary>
         bool PurgeOnStartup { get; }
+
+        /// <summary>
+        /// Additional <see href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SetQueueAttributes.html">attributes</see> for the queue.
+        /// </summary>
+        IDictionary<string, object> QueueAttributes { get; }
+
+        /// <summary>
+        /// Additional <see href="https://docs.aws.amazon.com/sns/latest/api/API_SetSubscriptionAttributes.html">attributes</see> for the queue's subscription.
+        /// </summary>
+        IDictionary<string, object> QueueSubscriptionAttributes { get; }
 
         /// <summary>
         /// Get the input address for the transport on the specified host

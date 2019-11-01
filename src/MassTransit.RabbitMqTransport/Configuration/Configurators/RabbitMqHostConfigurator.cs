@@ -1,18 +1,7 @@
-// Copyright 2007-2016 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.RabbitMqTransport.Configurators
 {
     using System;
+    using System.Security.Authentication;
 
 
     public class RabbitMqHostConfigurator :
@@ -24,6 +13,14 @@ namespace MassTransit.RabbitMqTransport.Configurators
         public RabbitMqHostConfigurator(Uri hostAddress, string connectionName = null)
         {
             _settings = hostAddress.GetConfigurationHostSettings();
+
+            if (_settings.Port == 5671)
+            {
+                UseSsl(s =>
+                {
+                    s.Protocol = SslProtocols.Tls12;
+                });
+            }
 
             _settings.ClientProvidedName = connectionName;
             _settings.VirtualHost = GetVirtualHost(hostAddress);
@@ -89,12 +86,23 @@ namespace MassTransit.RabbitMqTransport.Configurators
             _settings.HostNameSelector = configurator.GetHostNameSelector();
         }
 
+        public void RequestedChannelMax(ushort value)
+        {
+            _settings.RequestedChannelMax = value;
+        }
+
+        public void RequestedConnectionTimeout(int milliseconds)
+        {
+            _settings.RequestedConnectionTimeout = milliseconds;
+        }
+
         string GetVirtualHost(Uri address)
         {
             string[] segments = address.AbsolutePath.Split(_pathSeparator, StringSplitOptions.RemoveEmptyEntries);
 
             if (segments.Length == 0)
                 return "/";
+
             if (segments.Length == 1)
                 return segments[0];
 

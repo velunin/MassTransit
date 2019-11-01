@@ -1,41 +1,117 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the
-// License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.AmazonSqsTransport.Configuration.Configuration
+﻿namespace MassTransit.AmazonSqsTransport.Configuration.Configuration
 {
-    using MassTransit.Configuration;
+    using System;
+    using Configurators;
+    using Definition;
+    using MassTransit.Configurators;
+    using Topology.Settings;
+    using Topology.Topologies;
+    using Transport;
     using Transports;
 
 
     public class AmazonSqsHostConfiguration :
+        BaseHostConfiguration<IAmazonSqsReceiveEndpointConfiguration>,
         IAmazonSqsHostConfiguration
     {
         readonly IAmazonSqsBusConfiguration _busConfiguration;
-        readonly IAmazonSqsHostControl _host;
+        readonly IAmazonSqsTopologyConfiguration _topologyConfiguration;
+        readonly AmazonSqsHostProxy _proxy;
+        AmazonSqsHostSettings _hostSettings;
 
-        public AmazonSqsHostConfiguration(IAmazonSqsBusConfiguration busConfiguration, IAmazonSqsHostControl host)
+        public AmazonSqsHostConfiguration(IAmazonSqsBusConfiguration busConfiguration, IAmazonSqsTopologyConfiguration
+            topologyConfiguration)
         {
-            _host = host;
             _busConfiguration = busConfiguration;
+            _topologyConfiguration = topologyConfiguration;
+            _hostSettings = new ConfigurationHostSettings();
+
+            _proxy = new AmazonSqsHostProxy(this);
         }
 
-        IAmazonSqsBusConfiguration IAmazonSqsHostConfiguration.BusConfiguration => _busConfiguration;
-        IAmazonSqsHostControl IAmazonSqsHostConfiguration.Host => _host;
+        public override Uri HostAddress => _hostSettings.HostAddress;
+        public IAmazonSqsHost Proxy => _proxy;
+        public bool DeployTopologyOnly { get; set; }
 
-        public IAmazonSqsReceiveEndpointConfiguration CreateReceiveEndpointConfiguration(string queueName)
+        public AmazonSqsHostSettings Settings
         {
-            return new AmazonSqsReceiveEndpointConfiguration(this, queueName, _busConfiguration.CreateEndpointConfiguration());
+            get => _hostSettings;
+            set => _hostSettings = value ?? throw new ArgumentNullException(nameof(value));
         }
 
-        IBusHostControl IHostConfiguration.Host => _host;
+        public IAmazonSqsReceiveEndpointConfiguration CreateReceiveEndpointConfiguration(string queueName,
+            Action<IAmazonSqsReceiveEndpointConfigurator> configure)
+        {
+            var settings = new QueueReceiveSettings(queueName, true, false);
+            var endpointConfiguration = _busConfiguration.CreateEndpointConfiguration();
+
+            return CreateReceiveEndpointConfiguration(settings, endpointConfiguration, configure);
+        }
+
+        public IAmazonSqsReceiveEndpointConfiguration CreateReceiveEndpointConfiguration(QueueReceiveSettings settings,
+            IAmazonSqsEndpointConfiguration endpointConfiguration, Action<IAmazonSqsReceiveEndpointConfigurator> configure)
+        {
+            if (settings == null)
+                throw new ArgumentNullException(nameof(settings));
+            if (endpointConfiguration == null)
+                throw new ArgumentNullException(nameof(endpointConfiguration));
+
+            var configuration = new AmazonSqsReceiveEndpointConfiguration(this, settings, endpointConfiguration);
+
+            configuration.ConnectConsumerConfigurationObserver(_busConfiguration);
+            configuration.ConnectSagaConfigurationObserver(_busConfiguration);
+            configuration.ConnectHandlerConfigurationObserver(_busConfiguration);
+            configuration.ConnectActivityConfigurationObserver(_busConfiguration);
+
+            configure?.Invoke(configuration);
+
+            Observers.EndpointConfigured(configuration);
+
+            Add(configuration);
+
+            return configuration;
+        }
+
+        void IReceiveConfigurator.ReceiveEndpoint(string queueName, Action<IReceiveEndpointConfigurator> configureEndpoint)
+        {
+            ReceiveEndpoint(queueName, configureEndpoint);
+        }
+
+        void IReceiveConfigurator.ReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IReceiveEndpointConfigurator> configureEndpoint)
+        {
+            ReceiveEndpoint(definition, endpointNameFormatter, configureEndpoint);
+        }
+
+        public void ReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IAmazonSqsReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            var queueName = definition.GetEndpointName(endpointNameFormatter ?? DefaultEndpointNameFormatter.Instance);
+
+            ReceiveEndpoint(queueName, x => x.Apply(definition, configureEndpoint));
+        }
+
+        public void ReceiveEndpoint(string queueName, Action<IAmazonSqsReceiveEndpointConfigurator> configureEndpoint)
+        {
+            CreateReceiveEndpointConfiguration(queueName, configureEndpoint);
+        }
+
+        public override IBusHostControl Build()
+        {
+            var messageNameFormatter = new AmazonSqsMessageNameFormatter();
+
+            var hostTopology = new AmazonSqsHostTopology(messageNameFormatter, _hostSettings.HostAddress, _topologyConfiguration);
+
+            var host = new AmazonSqsHost(this, hostTopology);
+
+            foreach (var endpointConfiguration in Endpoints)
+            {
+                endpointConfiguration.Build(host);
+            }
+
+            _proxy.SetComplete(host);
+
+            return host;
+        }
     }
 }

@@ -1,8 +1,14 @@
 # Configuring Microsoft Dependency Injection
 
+**Important**
+This documentation applies to ASP.NET Core 2.0 and 2.1. For the ASP.NET Core 2.2, you can use the 
+[ASP.NET Core integration](../configuration.md#masstransit-and-aspnet-core) package that does many things out of the box.
+
 MassTransit supports the default dependency injection framework used by ASP.NET.
 
 > Support requires an additional NuGet package, `MassTransit.Extensions.DependencyInjection`, which is available using [NuGet](https://www.nuget.org/packages/MassTransit.Extensions.DependencyInjection/).
+
+A sample project for the container registration code is available on [GitHub](https://github.com/MassTransit/Sample-Containers).
 
 A working example is available on GitHub as well, visit the [repository](https://github.com/phatboyg/Sample-DotNetCore-DI/).
 
@@ -15,41 +21,37 @@ public class Startup
 {
     public void ConfigureServices(IServiceCollection services)
     {
-        services.AddScoped<OrderConsumer>();
-
         services.AddMassTransit(x =>
         {
             x.AddConsumer<OrderConsumer>();
-        });
 
-        services.AddSingleton(provider => Bus.Factory.CreateUsingRabbitMq(cfg =>
-        {
-            var host = cfg.Host("localhost", "/", h => { });
-
-            cfg.ReceiveEndpoint(host, "submit-order", e =>
+            x.AddBus(provider => Bus.Factory.CreateUsingRabbitMq(cfg =>
             {
-                e.PrefetchCount = 16;
-                e.UseMessageRetry(x => x.Interval(2, 100));
+                var host = cfg.Host("localhost", "/", h => { });
 
-                e.LoadFrom(provider);
+                cfg.ReceiveEndpoint(host, "submit-order", e =>
+                {
+                    e.PrefetchCount = 16;
+                    e.UseMessageRetry(x => x.Interval(2, 100));
 
-                EndpointConvention.Map<SubmitOrder>(e.InputAddress);
-            });
+                    e.ConfigureConsumer<OrderConsumer>(provider);
+                    
+                    EndpointConvention.Map<SubmitOrder>(e.InputAddress);
+                });
+
+                // or, configure the endpoints by convention
+                cfg.ConfigureEndpoints(provider);
+            }));
+
+            x.AddRequestClient<SubmitOrder>();
         }));
-
-        services.AddSingleton<IPublishEndpoint>(provider => provider.GetRequiredService<IBusControl>());
-        services.AddSingleton<ISendEndpointProvider>(provider => provider.GetRequiredService<IBusControl>());
-        services.AddSingleton<IBus>(provider => provider.GetRequiredService<IBusControl>());
-
-        services.AddScoped(provider => provider.GetRequiredService<IBus>().CreateRequestClient<SubmitOrder>());
 
         services.AddSingleton<IHostedService, BusService>();
     }
 }
 ```
 
-Once the bus is configured, a hosted service is used to start/stop the bus with the application. It is registered in
-the configuration above, using the interface type `IHostedService`.
+Once the bus is configured, a hosted service is used to start/stop the bus with the application. It is registered in the configuration above, using the interface type `IHostedService`.
 
 ```csharp
 public class BusService :

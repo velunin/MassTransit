@@ -1,26 +1,13 @@
-// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.Context
 {
     using System;
-    using System.Collections.Generic;
     using System.Diagnostics;
     using System.IO;
     using System.Net.Mime;
     using System.Threading;
     using System.Threading.Tasks;
     using GreenPipes;
-    using GreenPipes.Payloads;
+    using Metadata;
     using Serialization;
     using Topology;
     using Transports;
@@ -28,7 +15,7 @@ namespace MassTransit.Context
 
 
     public abstract class BaseReceiveContext :
-        BasePipeContext,
+        ScopePipeContext,
         ReceiveContext,
         IDisposable
     {
@@ -36,23 +23,18 @@ namespace MassTransit.Context
         readonly CancellationTokenSource _cancellationTokenSource;
         readonly Lazy<ContentType> _contentType;
         readonly Lazy<Headers> _headers;
-        readonly List<Task> _receiveTasks;
+        readonly PendingTaskCollection _receiveTasks;
         readonly Lazy<IPublishEndpointProvider> _publishEndpointProvider;
         readonly Stopwatch _receiveTimer;
         readonly Lazy<ISendEndpointProvider> _sendEndpointProvider;
         readonly ReceiveEndpointContext _receiveEndpointContext;
 
-        protected BaseReceiveContext(Uri inputAddress, bool redelivered, ReceiveEndpointContext receiveEndpointContext)
-            : this(inputAddress, redelivered, new CancellationTokenSource(), receiveEndpointContext)
-        {
-        }
-
-        protected BaseReceiveContext(Uri inputAddress, bool redelivered, CancellationTokenSource source, ReceiveEndpointContext receiveEndpointContext)
-            : base(new PayloadCacheScope(receiveEndpointContext), source.Token)
+        protected BaseReceiveContext(Uri inputAddress, bool redelivered, ReceiveEndpointContext receiveEndpointContext, params object[] payloads)
+            : base(receiveEndpointContext, payloads)
         {
             _receiveTimer = Stopwatch.StartNew();
 
-            _cancellationTokenSource = source;
+            _cancellationTokenSource = new CancellationTokenSource();
             _receiveEndpointContext = receiveEndpointContext;
 
             InputAddress = inputAddress;
@@ -61,7 +43,7 @@ namespace MassTransit.Context
             _headers = new Lazy<Headers>(() => new JsonHeaders(ObjectTypeDeserializer.Instance, HeaderProvider));
 
             _contentType = new Lazy<ContentType>(GetContentType);
-            _receiveTasks = new List<Task>(4);
+            _receiveTasks = new PendingTaskCollection(4);
 
             _sendEndpointProvider = new Lazy<ISendEndpointProvider>(GetSendEndpointProvider);
             _publishEndpointProvider = new Lazy<IPublishEndpointProvider>(GetPublishEndpointProvider);
@@ -74,25 +56,19 @@ namespace MassTransit.Context
             _cancellationTokenSource.Dispose();
         }
 
+        CancellationToken PipeContext.CancellationToken => _cancellationTokenSource.Token;
+
         public bool IsDelivered { get; private set; }
         public bool IsFaulted { get; private set; }
         public ISendEndpointProvider SendEndpointProvider => _sendEndpointProvider.Value;
         public IPublishEndpointProvider PublishEndpointProvider => _publishEndpointProvider.Value;
         public IPublishTopology PublishTopology => _receiveEndpointContext.Publish;
 
-        public Task ReceiveCompleted
-        {
-            get
-            {
-                lock (_receiveTasks)
-                    return Task.WhenAll(_receiveTasks.ToArray());
-            }
-        }
+        public Task ReceiveCompleted => _receiveTasks.Completed(CancellationToken);
 
         public void AddReceiveTask(Task task)
         {
-            lock (_receiveTasks)
-                _receiveTasks.Add(task);
+            _receiveTasks.Add(task);
         }
 
         public bool Redelivered { get; }
@@ -114,6 +90,8 @@ namespace MassTransit.Context
             IsFaulted = true;
 
             context.LogFaulted(duration, consumerType, exception);
+
+            GetOrAddPayload<ConsumerFaultInfo>(() => new FaultInfo(TypeMetadataCache<T>.ShortName, consumerType));
 
             return _receiveEndpointContext.ReceiveObservers.ConsumeFault(context, duration, consumerType, exception);
         }
@@ -161,6 +139,20 @@ namespace MassTransit.Context
         public void Cancel()
         {
             _cancellationTokenSource.Cancel();
+        }
+
+
+        class FaultInfo :
+            ConsumerFaultInfo
+        {
+            public FaultInfo(string messageType, string consumerType)
+            {
+                MessageType = messageType;
+                ConsumerType = consumerType;
+            }
+
+            public string MessageType { get; }
+            public string ConsumerType { get; }
         }
     }
 }

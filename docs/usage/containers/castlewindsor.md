@@ -1,7 +1,9 @@
 # Configuring Castle Windsor
 
-The following example shows how to configure a simple Castle Windsor container, and include the bus in the
+Add reference to MassTransit CastleWindsor NuGet package. The following example shows how to configure a simple Castle Windsor container, and include the bus in the
 container. The two bus interfaces, `IBus` and `IBusControl`, are included.
+
+A sample project for the container registration code is available on [GitHub](https://github.com/MassTransit/Sample-Containers).
 
 <div class="alert alert-info">
 <b>Note:</b>
@@ -14,30 +16,40 @@ container. The two bus interfaces, `IBus` and `IBusControl`, are included.
 public static void Main(string[] args)
 {
     var container = new WindsorContainer();
-
-    // register each consumer manually
-    container.Register(Component.For<YourConsumer>().LifestyleTransient());
-
-    //or use Windsor's excellent scanning capabilities
-    container.Register(AllTypes.FromThisAssembly().BasedOn<IConsumer>());
-
-    var busControl = Bus.Factory.CreateUsingRabbitMq(config =>
+    container.AddMassTransit(x =>
     {
-        cfg.Host(new Uri("rabbitmq://localhost/"), host =>
-        {
-            host.Username("guest");
-            host.Password("guest");
-        });
+        // add a specific consumer
+        x.AddConsumer<UpdateCustomerAddressConsumer>();
 
-        config.ReceiveEndpoint("customer_update_queue", endpoint =>
+        // add all consumers in the specified assembly
+        x.AddConsumers(Assembly.GetExecutingAssembly());
+
+        // add consumers by type
+        x.AddConsumers(typeof(ConsumerOne), typeof(ConsumerTwo));
+
+        // add the bus to the container
+        x.AddBus(context => Bus.Factory.CreateUsingRabbitMq(cfg =>
         {
-            endpoint.EnableMessageScope();
-            endpoint.LoadFrom(container);
-        })
+            var host = cfg.Host("localhost/");
+
+            cfg.ReceiveEndpoint("customer_update", ec =>
+            {
+                // Configure a single consumer
+                ec.ConfigureConsumer<UpdateCustomerConsumer>(context);
+
+                // configure all consumers
+                ec.ConfigureConsumers(context);
+
+                // configure consumer by type
+                ec.ConfigureConsumer(typeof(ConsumerOne), context);
+            });
+
+            // or, configure the endpoints by convention
+            cfg.ConfigureEndpoints(context);
+        });
     });
 
-    container.Register(Component.For<IBus, IBusControl>().Instance(busControl));
-
+    IBusControl busControl = container.Kernel.Resolve<IBusControl>();
     busControl.Start();
 }
 ```
@@ -67,7 +79,11 @@ public class MassTransitInstaller :
             config.ReceiveEndpoint(busConfig.QueueName, endpoint =>
             {
                 endpoint.EnableMessageScope();
+                
                 endpoint.LoadFrom(container);
+                
+                // Above method works but it is deprecated, instead below method should be used to get Consumer from container.
+                endPoint.Consumer<YourConsumer>(container.Kernel);
             })
         });
 

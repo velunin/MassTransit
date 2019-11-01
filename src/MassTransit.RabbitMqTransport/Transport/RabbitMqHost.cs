@@ -1,47 +1,34 @@
-// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.RabbitMqTransport.Transport
 {
     using System;
-    using System.Collections.Generic;
-    using System.Linq;
-    using System.Threading;
     using System.Threading.Tasks;
     using Configuration;
-    using Events;
+    using Context;
+    using Contexts;
+    using Definition;
     using GreenPipes;
     using GreenPipes.Agents;
+    using GreenPipes.Caching;
     using Integration;
-    using MassTransit.Pipeline;
-    using MassTransit.Topology;
+    using MassTransit.Configurators;
+    using Pipeline;
     using Topology;
     using Transports;
 
 
     public class RabbitMqHost :
-        Supervisor,
+        BaseHost,
         IRabbitMqHostControl
     {
-        readonly RabbitMqHostSettings _settings;
-        readonly IRabbitMqHostTopology _topology;
-        HostHandle _handle;
+        readonly IRabbitMqHostConfiguration _hostConfiguration;
+        readonly IRabbitMqHostTopology _hostTopology;
+        readonly IIndex<Uri, CachedSendTransport> _index;
 
-        public RabbitMqHost(IRabbitMqBusConfiguration busConfiguration, RabbitMqHostSettings settings, IRabbitMqHostTopology topology)
+        public RabbitMqHost(IRabbitMqHostConfiguration hostConfiguration, IRabbitMqHostTopology hostTopology)
+            : base(hostConfiguration, hostTopology)
         {
-            _settings = settings;
-            _topology = topology;
-
-            ReceiveEndpoints = new ReceiveEndpointCollection();
+            _hostConfiguration = hostConfiguration;
+            _hostTopology = hostTopology;
 
             ConnectionRetryPolicy = Retry.CreatePolicy(x =>
             {
@@ -50,163 +37,131 @@ namespace MassTransit.RabbitMqTransport.Transport
                 x.Exponential(1000, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(3));
             });
 
-            ConnectionCache = new RabbitMqConnectionCache(settings, _topology);
+            ConnectionContextSupervisor = new RabbitMqConnectionContextSupervisor(hostConfiguration, hostTopology);
 
-            ReceiveEndpointFactory = new RabbitMqReceiveEndpointFactory(busConfiguration, this);
+            var cacheSettings = new CacheSettings(SendEndpointCacheDefaults.Capacity, SendEndpointCacheDefaults.MinAge, SendEndpointCacheDefaults.MaxAge);
+
+            var cache = new GreenCache<CachedSendTransport>(cacheSettings);
+            _index = cache.AddIndex("key", x => x.Address);
         }
 
-        public IRabbitMqReceiveEndpointFactory ReceiveEndpointFactory { get; }
-
-        public IReceiveEndpointCollection ReceiveEndpoints { get; }
-
-        public async Task<HostHandle> Start()
+        protected override void Probe(ProbeContext context)
         {
-            if (_handle != null)
-                throw new MassTransitException($"The host was already started: {_settings.ToDebugString()}");
-
-            HostReceiveEndpointHandle[] handles = ReceiveEndpoints.StartEndpoints();
-
-            _handle = new Handle(handles, this, ConnectionCache);
-
-            return _handle;
-        }
-
-        public bool Matches(Uri address)
-        {
-            if (!address.Scheme.Equals("rabbitmq", StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            var settings = address.GetHostSettings();
-
-            return RabbitMqHostEqualityComparer.Default.Equals(_settings, settings);
-        }
-
-        public void AddReceiveEndpoint(string endpointName, IReceiveEndpointControl receiveEndpoint)
-        {
-            ReceiveEndpoints.Add(endpointName, receiveEndpoint);
-        }
-
-        void IProbeSite.Probe(ProbeContext context)
-        {
-            var scope = context.CreateScope("host");
-            scope.Set(new
+            context.Set(new
             {
                 Type = "RabbitMQ",
-                _settings.Host,
-                _settings.Port,
-                _settings.VirtualHost,
-                _settings.Username,
-                Password = new string('*', _settings.Password.Length),
-                _settings.Heartbeat,
-                _settings.Ssl
+                Settings.Host,
+                Settings.Port,
+                Settings.VirtualHost,
+                Settings.Username,
+                Password = new string('*', Settings.Password.Length),
+                Settings.Heartbeat,
+                Settings.Ssl
             });
 
-            if (_settings.Ssl)
-                scope.Set(new
-                {
-                    _settings.SslServerName
-                });
+            if (Settings.Ssl)
+            {
+                context.Set(new {Settings.SslServerName});
+            }
 
-            ConnectionCache.Probe(scope);
-
-            ReceiveEndpoints.Probe(scope);
+            ConnectionContextSupervisor.Probe(context);
         }
 
-        public Uri Address => _settings.HostAddress;
-        IHostTopology IHost.Topology => _topology;
-
-        public IConnectionCache ConnectionCache { get; }
+        public IConnectionContextSupervisor ConnectionContextSupervisor { get; }
         public IRetryPolicy ConnectionRetryPolicy { get; }
-        public RabbitMqHostSettings Settings => _settings;
-        public IRabbitMqHostTopology Topology => _topology;
+        public RabbitMqHostSettings Settings => _hostConfiguration.Settings;
+        IRabbitMqHostTopology IRabbitMqHost.Topology => _hostTopology;
 
-        public HostReceiveEndpointHandle ConnectReceiveEndpoint(Action<IRabbitMqReceiveEndpointConfigurator> configure = null)
+        public override HostReceiveEndpointHandle ConnectReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IReceiveEndpointConfigurator> configureEndpoint = null)
         {
-            return ConnectReceiveEndpoint(_topology.CreateTemporaryQueueName("endpoint"), configure);
+            return ConnectReceiveEndpoint(definition, endpointNameFormatter, configureEndpoint);
+        }
+
+        public override HostReceiveEndpointHandle ConnectReceiveEndpoint(string queueName, Action<IReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            return ConnectReceiveEndpoint(queueName, configureEndpoint);
+        }
+
+        public HostReceiveEndpointHandle ConnectReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter = null,
+            Action<IRabbitMqReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            var queueName = definition.GetEndpointName(endpointNameFormatter ?? DefaultEndpointNameFormatter.Instance);
+
+            return ConnectReceiveEndpoint(queueName, x => x.Apply(definition, configureEndpoint));
         }
 
         public HostReceiveEndpointHandle ConnectReceiveEndpoint(string queueName, Action<IRabbitMqReceiveEndpointConfigurator> configure = null)
         {
-            if (ReceiveEndpointFactory == null)
-                throw new ConfigurationException("The receive endpoint factory was not specified");
+            LogContext.SetCurrentIfNull(DefaultLogContext);
 
-            ReceiveEndpointFactory.CreateReceiveEndpoint(queueName, configure);
+            LogContext.Debug?.Log("Connect receive endpoint: {Queue}", queueName);
+
+            var configuration = _hostConfiguration.CreateReceiveEndpointConfiguration(queueName, configure);
+
+            BusConfigurationResult.CompileResults(configuration.Validate());
+
+            configuration.Build(this);
 
             return ReceiveEndpoints.Start(queueName);
         }
 
-        ConnectHandle IConsumeMessageObserverConnector.ConnectConsumeMessageObserver<T>(IConsumeMessageObserver<T> observer)
+        public async Task<ISendTransport> CreateSendTransport(RabbitMqEndpointAddress address)
         {
-            return ReceiveEndpoints.ConnectConsumeMessageObserver(observer);
-        }
-
-        ConnectHandle IConsumeObserverConnector.ConnectConsumeObserver(IConsumeObserver observer)
-        {
-            return ReceiveEndpoints.ConnectConsumeObserver(observer);
-        }
-
-        ConnectHandle IReceiveObserverConnector.ConnectReceiveObserver(IReceiveObserver observer)
-        {
-            return ReceiveEndpoints.ConnectReceiveObserver(observer);
-        }
-
-        ConnectHandle IReceiveEndpointObserverConnector.ConnectReceiveEndpointObserver(IReceiveEndpointObserver observer)
-        {
-            return ReceiveEndpoints.ConnectReceiveEndpointObserver(observer);
-        }
-
-        ConnectHandle IPublishObserverConnector.ConnectPublishObserver(IPublishObserver observer)
-        {
-            return ReceiveEndpoints.ConnectPublishObserver(observer);
-        }
-
-        ConnectHandle ISendObserverConnector.ConnectSendObserver(ISendObserver observer)
-        {
-            return ReceiveEndpoints.ConnectSendObserver(observer);
-        }
-
-
-        class Handle :
-            HostHandle
-        {
-            readonly IAgent _connectionCache;
-            readonly HostReceiveEndpointHandle[] _handles;
-            readonly RabbitMqHost _host;
-
-            public Handle(HostReceiveEndpointHandle[] handles, RabbitMqHost host, IAgent connectionCache)
+            Task<CachedSendTransport> Create(Uri transportAddress)
             {
-                _host = host;
-                _handles = handles;
-                _connectionCache = connectionCache;
+                var settings = _hostTopology.SendTopology.GetSendSettings(address);
+
+                var brokerTopology = settings.GetBrokerTopology();
+
+                var supervisor = CreateModelContextSupervisor();
+
+                IPipe<ModelContext> pipe = new ConfigureTopologyFilter<SendSettings>(settings, brokerTopology).ToPipe();
+
+                var transport = CreateSendTransport(supervisor, pipe, settings.ExchangeName);
+
+                return Task.FromResult(new CachedSendTransport(transportAddress, transport));
             }
 
-            Task<HostReady> HostHandle.Ready
-            {
-                get { return ReadyOrNot(_handles.Select(x => x.Ready)); }
-            }
+            return await _index.Get(address, Create).ConfigureAwait(false);
+        }
 
-            async Task HostHandle.Stop(CancellationToken cancellationToken)
-            {
-                await Task.WhenAll(_handles.Select(x => x.StopAsync(cancellationToken))).ConfigureAwait(false);
+        public Task<ISendTransport> CreatePublishTransport<T>()
+            where T : class
+        {
+            IRabbitMqMessagePublishTopology<T> publishTopology = _hostTopology.Publish<T>();
 
-                await _host.Stop("Host Stopped", cancellationToken).ConfigureAwait(false);
+            var sendSettings = publishTopology.GetSendSettings(_hostConfiguration.HostAddress);
 
-                await _connectionCache.Stop("Host stopped", cancellationToken).ConfigureAwait(false);
-            }
+            var brokerTopology = publishTopology.GetBrokerTopology();
 
-            async Task<HostReady> ReadyOrNot(IEnumerable<Task<ReceiveEndpointReady>> endpoints)
-            {
-                Task<ReceiveEndpointReady>[] readyTasks = endpoints as Task<ReceiveEndpointReady>[] ?? endpoints.ToArray();
+            var supervisor = CreateModelContextSupervisor();
 
-                foreach (Task<ReceiveEndpointReady> ready in readyTasks)
-                    await ready.ConfigureAwait(false);
+            IPipe<ModelContext> pipe = new ConfigureTopologyFilter<SendSettings>(sendSettings, brokerTopology).ToPipe();
 
-                await _connectionCache.Ready.ConfigureAwait(false);
+            var transport = CreateSendTransport(supervisor, pipe, publishTopology.Exchange.ExchangeName);
 
-                ReceiveEndpointReady[] endpointsReady = await Task.WhenAll(readyTasks).ConfigureAwait(false);
+            return Task.FromResult(transport);
+        }
 
-                return new HostReadyEvent(_host.Address, endpointsReady);
-            }
+        ISendTransport CreateSendTransport(IModelContextSupervisor modelContextSupervisor, IPipe<ModelContext> pipe, string exchangeName)
+        {
+            var sendTransportContext = new HostRabbitMqSendTransportContext(modelContextSupervisor, pipe, exchangeName, SendLogContext);
+
+            var transport = new RabbitMqSendTransport(sendTransportContext);
+            Add(transport);
+
+            return transport;
+        }
+
+        IModelContextSupervisor CreateModelContextSupervisor()
+        {
+            return new ModelContextSupervisor(ConnectionContextSupervisor);
+        }
+
+        protected override IAgent[] GetAgentHandles()
+        {
+            return new IAgent[] {ConnectionContextSupervisor};
         }
     }
 }

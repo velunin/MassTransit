@@ -1,68 +1,75 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.HttpTransport.Transport
+﻿namespace MassTransit.HttpTransport.Transport
 {
     using System;
-    using System.Collections.Generic;
-    using System.Linq;
     using System.Threading;
     using System.Threading.Tasks;
-    using Events;
+    using Clients;
+    using Configuration;
+    using Context;
     using GreenPipes;
     using GreenPipes.Agents;
     using Hosting;
     using Logging;
-    using MassTransit.Pipeline;
     using MassTransit.Topology;
     using Transports;
+    using Util;
 
 
     public class HttpHost :
-        Supervisor,
+        BaseHost,
         IHttpHostControl
     {
-        static readonly ILog _log = Logger.Get<HttpHost>();
-        readonly HttpHostCache _httpHostCache;
+        readonly IHttpHostConfiguration _hostConfiguration;
+        readonly IHostTopology _hostTopology;
+        readonly HttpHostContextSupervisor _httpHostContextSupervisor;
 
-        readonly HttpHostSettings _settings;
-
-        public HttpHost(HttpHostSettings hostSettings, IHostTopology topology)
+        public HttpHost(IHttpHostConfiguration hostConfiguration, IHostTopology hostTopology)
+            : base(hostConfiguration, hostTopology)
         {
-            _settings = hostSettings;
-            Topology = topology;
+            _hostConfiguration = hostConfiguration;
+            _hostTopology = hostTopology;
 
-            ReceiveEndpoints = new ReceiveEndpointCollection();
-
-            _httpHostCache = new HttpHostCache(Settings);
+            _httpHostContextSupervisor = new HttpHostContextSupervisor(hostConfiguration);
         }
 
-        public IHttpReceiveEndpointFactory ReceiveEndpointFactory { get; set; }
-
-        public IReceiveEndpointCollection ReceiveEndpoints { get; }
-
-        public async Task<HostHandle> Start()
+        protected override void Probe(ProbeContext context)
         {
-            var handlesReady = new TaskCompletionSource<HostReceiveEndpointHandle[]>();
-            var hostStarted = new TaskCompletionSource<bool>();
+            context.Set(new
+            {
+                Type = "HTTP",
+                Settings.Host,
+                Settings.Port,
+                Settings.Method.Method
+            });
+        }
+
+        public override HostReceiveEndpointHandle ConnectReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override HostReceiveEndpointHandle ConnectReceiveEndpoint(string queueName, Action<IReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override async Task<HostHandle> Start(CancellationToken cancellationToken)
+        {
+            LogContext.Debug?.Log("Starting host: {HostAddress}", _hostConfiguration.HostAddress);
+
+            DefaultLogContext = LogContext.Current;
+            SendLogContext = LogContext.Current.CreateLogContext(LogCategoryName.Transport.Send);
+            ReceiveLogContext = LogContext.Current.CreateLogContext(LogCategoryName.Transport.Receive);
+
+            var handlesReady = TaskUtil.GetTask<HostReceiveEndpointHandle[]>();
+            var hostStarted = TaskUtil.GetTask<bool>();
 
             IPipe<HttpHostContext> connectionPipe = Pipe.ExecuteAsync<HttpHostContext>(async context =>
             {
-                if (_log.IsDebugEnabled)
-                    _log.DebugFormat("Connection established to {0}", Settings.Host);
-
                 try
                 {
-                    HostReceiveEndpointHandle[] endpointHandles = await handlesReady.Task.ConfigureAwait(false);
+                    await handlesReady.Task.ConfigureAwait(false);
 
                     await context.Start(context.CancellationToken).ConfigureAwait(false);
 
@@ -81,14 +88,11 @@ namespace MassTransit.HttpTransport.Transport
                 }
             });
 
-            if (_log.IsDebugEnabled)
-                _log.DebugFormat("Starting connection to {0}", Settings.Host);
+            var connectionTask = HttpHostContextSupervisor.Send(connectionPipe, Stopping);
 
-            var connectionTask = HttpHostCache.Send(connectionPipe, Stopping);
+            HostReceiveEndpointHandle[] handles = ReceiveEndpoints.StartEndpoints(cancellationToken);
 
-            HostReceiveEndpointHandle[] handles = ReceiveEndpoints.StartEndpoints();
-
-            var hostHandle = new Handle(handles, this, _httpHostCache, connectionTask);
+            HostHandle hostHandle = new StartHostHandle(this, handles, GetAgentHandles());
 
             await hostHandle.Ready.ConfigureAwait(false);
 
@@ -99,114 +103,24 @@ namespace MassTransit.HttpTransport.Transport
             return hostHandle;
         }
 
-        public bool Matches(Uri address)
+        protected override IAgent[] GetAgentHandles()
         {
-            var settings = address.GetHostSettings();
-
-            return HttpHostEqualityComparer.Default.Equals(_settings, settings);
+            return new IAgent[] {_httpHostContextSupervisor};
         }
 
-        public void AddReceiveEndpoint(string endpointName, IReceiveEndpointControl receiveEndpoint)
+        public IHttpHostContextSupervisor HttpHostContextSupervisor => _httpHostContextSupervisor;
+        public HttpHostSettings Settings => _hostConfiguration.Settings;
+
+        public Task<ISendTransport> CreateSendTransport(Uri address, ReceiveEndpointContext receiveEndpointContext)
         {
-            ReceiveEndpoints.Add(endpointName, receiveEndpoint);
-        }
+            var clientContextSupervisor = new HttpClientContextSupervisor(receiveEndpointContext.ReceivePipe);
 
-        public void Probe(ProbeContext context)
-        {
-            var scope = context.CreateScope("host");
-            scope.Set(new
-            {
-                Type = "HTTP",
-                Settings.Host,
-                Settings.Port,
-                Settings.Method.Method
-            });
+            var sendSettings = address.GetSendSettings();
 
-            ReceiveEndpoints.Probe(scope);
-        }
+            var transport = new HttpSendTransport(clientContextSupervisor, sendSettings, receiveEndpointContext);
+            Add(transport);
 
-        public IHttpHostCache HttpHostCache => _httpHostCache;
-        public HttpHostSettings Settings => _settings;
-        public Uri Address => new Uri($"{_settings.Scheme}://{_settings.Host}:{_settings.Port}");
-
-        public IHostTopology Topology { get; }
-
-        ConnectHandle IConsumeMessageObserverConnector.ConnectConsumeMessageObserver<T>(IConsumeMessageObserver<T> observer)
-        {
-            return ReceiveEndpoints.ConnectConsumeMessageObserver(observer);
-        }
-
-        ConnectHandle IConsumeObserverConnector.ConnectConsumeObserver(IConsumeObserver observer)
-        {
-            return ReceiveEndpoints.ConnectConsumeObserver(observer);
-        }
-
-        ConnectHandle IReceiveObserverConnector.ConnectReceiveObserver(IReceiveObserver observer)
-        {
-            return ReceiveEndpoints.ConnectReceiveObserver(observer);
-        }
-
-        ConnectHandle IReceiveEndpointObserverConnector.ConnectReceiveEndpointObserver(IReceiveEndpointObserver observer)
-        {
-            return ReceiveEndpoints.ConnectReceiveEndpointObserver(observer);
-        }
-
-        ConnectHandle IPublishObserverConnector.ConnectPublishObserver(IPublishObserver observer)
-        {
-            return ReceiveEndpoints.ConnectPublishObserver(observer);
-        }
-
-        ConnectHandle ISendObserverConnector.ConnectSendObserver(ISendObserver observer)
-        {
-            return ReceiveEndpoints.ConnectSendObserver(observer);
-        }
-
-
-        class Handle :
-            HostHandle
-        {
-            readonly IAgent _hostAgent;
-            readonly Task _connectionTask;
-            readonly HostReceiveEndpointHandle[] _handles;
-            readonly HttpHost _host;
-
-            public Handle(HostReceiveEndpointHandle[] handles, HttpHost host, IAgent hostAgent, Task connectionTask)
-            {
-                _host = host;
-                _handles = handles;
-                _hostAgent = hostAgent;
-                _connectionTask = connectionTask;
-            }
-
-            public Task<HostReady> Ready
-            {
-                get { return ReadyOrNot(_handles.Select(x => x.Ready)); }
-            }
-
-            async Task HostHandle.Stop(CancellationToken cancellationToken)
-            {
-                await Task.WhenAll(_handles.Select(x => x.StopAsync(cancellationToken))).ConfigureAwait(false);
-
-                await _host.Stop("Host Stopped", cancellationToken).ConfigureAwait(false);
-
-                await _hostAgent.Stop("Host stopped", cancellationToken).ConfigureAwait(false);
-
-                await _connectionTask.ConfigureAwait(false);
-            }
-
-            async Task<HostReady> ReadyOrNot(IEnumerable<Task<ReceiveEndpointReady>> endpoints)
-            {
-                Task<ReceiveEndpointReady>[] readyTasks = endpoints as Task<ReceiveEndpointReady>[] ?? endpoints.ToArray();
-
-                foreach (Task<ReceiveEndpointReady> ready in readyTasks)
-                    await ready.ConfigureAwait(false);
-
-                await _hostAgent.Ready.ConfigureAwait(false);
-
-                ReceiveEndpointReady[] endpointsReady = await Task.WhenAll(readyTasks).ConfigureAwait(false);
-
-                return new HostReadyEvent(_host.Address, endpointsReady);
-            }
+            return Task.FromResult<ISendTransport>(transport);
         }
     }
 }

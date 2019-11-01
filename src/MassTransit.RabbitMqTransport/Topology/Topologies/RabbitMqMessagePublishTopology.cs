@@ -1,16 +1,4 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.RabbitMqTransport.Topology.Topologies
+﻿namespace MassTransit.RabbitMqTransport.Topology.Topologies
 {
     using System;
     using System.Collections.Generic;
@@ -19,9 +7,9 @@ namespace MassTransit.RabbitMqTransport.Topology.Topologies
     using Entities;
     using MassTransit.Topology;
     using MassTransit.Topology.Topologies;
+    using Metadata;
     using Settings;
     using Specifications;
-    using Util;
 
 
     public class RabbitMqMessagePublishTopology<TMessage> :
@@ -31,11 +19,14 @@ namespace MassTransit.RabbitMqTransport.Topology.Topologies
     {
         readonly ExchangeConfigurator _exchange;
         readonly IList<IRabbitMqMessagePublishTopology> _implementedMessageTypes;
+        readonly IRabbitMqPublishTopology _publishTopology;
         readonly IMessageTopology<TMessage> _messageTopology;
         readonly IList<IRabbitMqPublishTopologySpecification> _specifications;
 
-        public RabbitMqMessagePublishTopology(IMessageTopology<TMessage> messageTopology, IMessageExchangeTypeSelector<TMessage> exchangeTypeSelector)
+        public RabbitMqMessagePublishTopology(IRabbitMqPublishTopology publishTopology, IMessageTopology<TMessage> messageTopology,
+            IMessageExchangeTypeSelector<TMessage> exchangeTypeSelector)
         {
+            _publishTopology = publishTopology;
             _messageTopology = messageTopology;
             ExchangeTypeSelector = exchangeTypeSelector;
 
@@ -74,18 +65,18 @@ namespace MassTransit.RabbitMqTransport.Topology.Topologies
 
         public override bool TryGetPublishAddress(Uri baseAddress, out Uri publishAddress)
         {
-            publishAddress = GetSendSettings().GetSendAddress(baseAddress);
+            publishAddress = _exchange.GetEndpointAddress(baseAddress);
             return true;
         }
 
-        public SendSettings GetSendSettings()
+        public SendSettings GetSendSettings(Uri hostAddress)
         {
-            return new RabbitMqSendSettings(_exchange.ExchangeName, _exchange.ExchangeType, _exchange.Durable, _exchange.AutoDelete);
+            return new RabbitMqSendSettings(GetEndpointAddress(hostAddress));
         }
 
-        public BrokerTopology GetBrokerTopology(PublishBrokerTopologyOptions options)
+        public BrokerTopology GetBrokerTopology()
         {
-            var builder = new PublishEndpointBrokerTopologyBuilder(options);
+            var builder = new PublishEndpointBrokerTopologyBuilder(_publishTopology.BrokerTopologyOptions);
 
             Apply(builder);
 
@@ -119,9 +110,14 @@ namespace MassTransit.RabbitMqTransport.Topology.Topologies
             _exchange.SetExchangeArgument(key, value);
         }
 
+        public RabbitMqEndpointAddress GetEndpointAddress(Uri hostAddress)
+        {
+            return _exchange.GetEndpointAddress(hostAddress);
+        }
+
         public string AlternateExchange
         {
-            set => _exchange.SetExchangeArgument("alternate-exchange", value);
+            set => _exchange.SetExchangeArgument(RabbitMQ.Client.Headers.AlternateExchange, value);
         }
 
         public void BindQueue(string exchangeName, string queueName, Action<IQueueBindingConfigurator> configure = null)
@@ -138,7 +134,7 @@ namespace MassTransit.RabbitMqTransport.Topology.Topologies
             _specifications.Add(specification);
         }
 
-        public void BindAlterateExchangeQueue(string exchangeName, string queueName = null, Action<IQueueBindingConfigurator> configure = null)
+        public void BindAlternateExchangeQueue(string exchangeName, string queueName = null, Action<IQueueBindingConfigurator> configure = null)
         {
             BindQueue(exchangeName, queueName, configure);
 

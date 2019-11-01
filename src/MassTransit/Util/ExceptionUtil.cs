@@ -13,7 +13,9 @@
 namespace MassTransit.Util
 {
     using System;
+    using System.Collections.Generic;
     using System.Text.RegularExpressions;
+    using Metadata;
 
 
     public static class ExceptionUtil
@@ -47,6 +49,21 @@ namespace MassTransit.Util
             }
 
             return _cleanup.Replace(exception.StackTrace, "");
+        }
+
+        public static IDictionary<string, object> GetExceptionHeaderDictionary(Exception exception)
+        {
+            exception = exception.GetBaseException() ?? exception;
+
+            var exceptionMessage = GetMessage(exception);
+
+            return new Dictionary<string, object>
+            {
+                {MessageHeaders.Reason, "fault"},
+                {MessageHeaders.FaultExceptionType, TypeMetadataCache.GetShortName(exception.GetType())},
+                {MessageHeaders.FaultMessage, exceptionMessage},
+                {MessageHeaders.FaultStackTrace, ExceptionUtil.GetStackTrace(exception)}
+            };
         }
     }
 }

@@ -17,6 +17,7 @@ namespace MassTransit.Topology.Topologies
     using System.Collections.Generic;
     using System.Linq;
     using GreenPipes;
+    using Metadata;
     using Observers;
     using Util;
 
@@ -56,7 +57,7 @@ namespace MassTransit.Topology.Topologies
             return specification as IMessageSendTopologyConfigurator<T>;
         }
 
-        public ConnectHandle Connect(ISendTopologyConfigurationObserver observer)
+        public ConnectHandle ConnectSendTopologyConfigurationObserver(ISendTopologyConfigurationObserver observer)
         {
             return _observers.Connect(observer);
         }

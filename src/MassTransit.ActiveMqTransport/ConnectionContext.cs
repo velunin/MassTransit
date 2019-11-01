@@ -13,6 +13,7 @@
 namespace MassTransit.ActiveMqTransport
 {
     using System;
+    using System.Threading;
     using System.Threading.Tasks;
     using Apache.NMS;
     using GreenPipes;
@@ -40,14 +41,10 @@ namespace MassTransit.ActiveMqTransport
         IActiveMqHostTopology Topology { get; }
 
         /// <summary>
-        /// The host settings for the connection
-        /// </summary>
-        ActiveMqHostSettings HostSettings { get; }
-
-        /// <summary>
         /// Create a model on the connection
         /// </summary>
+        /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        Task<ISession> CreateSession();
+        Task<ISession> CreateSession(CancellationToken cancellationToken);
     }
 }

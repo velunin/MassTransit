@@ -47,12 +47,50 @@ namespace MassTransit.Azure.ServiceBus.Core.Tests
 
                 ConsumeContext<PingMessage> pinged = await pingHandled;
 
-                Assert.That(pinged.ReceiveContext.InputAddress, Is.EqualTo(new Uri(Host.Address, "second_queue")));
+                Assert.That(pinged.ReceiveContext.InputAddress,
+                    Is.EqualTo(new Uri(string.Join("/", Host.Address.GetLeftPart(UriPartial.Path), "second_queue"))));
             }
             finally
             {
                 await handle.StopAsync();
             }
+        }
+
+        [Test]
+        public async Task Should_work_when_reconnected()
+        {
+            async Task ConnectAndConsume()
+            {
+                Guid correlationId = NewId.NextGuid();
+
+                Task<ConsumeContext<PingMessage>> pingHandled = null;
+
+                var handle = Host.ConnectReceiveEndpoint("second_queue", x =>
+                {
+                    pingHandled = Handled<PingMessage>(x, context => context.Message.CorrelationId == correlationId);
+
+                    x.RemoveSubscriptions = true;
+                });
+
+                await handle.Ready;
+
+                try
+                {
+                    await Bus.Publish(new PingMessage(correlationId));
+
+                    ConsumeContext<PingMessage> pinged = await pingHandled;
+
+                    Assert.That(pinged.ReceiveContext.InputAddress,
+                        Is.EqualTo(new Uri(string.Join("/", Host.Address.GetLeftPart(UriPartial.Path), "second_queue"))));
+                }
+                finally
+                {
+                    await handle.StopAsync();
+                }
+            }
+
+            await ConnectAndConsume();
+            await ConnectAndConsume();
         }
 
         [Test]
@@ -107,7 +145,8 @@ namespace MassTransit.Azure.ServiceBus.Core.Tests
                 ConsumeContext<PingMessage> pinged = await pingHandled;
 
                 Assert.That(pinged.ReceiveContext.InputAddress,
-                    Is.EqualTo(new Uri(string.Join("/", Host.Address.GetLeftPart(UriPartial.Authority), Host.Topology.Message<PingMessage>().EntityName, "Subscriptions",
+                    Is.EqualTo(new Uri(string.Join("/", Host.Address.GetLeftPart(UriPartial.Authority), Host.Topology.Message<PingMessage>().EntityName,
+                        "Subscriptions",
                         "second_subscription"))));
             }
             finally

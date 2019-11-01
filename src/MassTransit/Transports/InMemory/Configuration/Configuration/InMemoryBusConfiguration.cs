@@ -1,57 +1,44 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the
-// License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.Transports.InMemory.Configuration
+﻿namespace MassTransit.Transports.InMemory.Configuration
 {
     using System;
+    using EndpointConfigurators;
+    using GreenPipes;
     using MassTransit.Configuration;
+    using Pipeline.Observables;
 
 
     public class InMemoryBusConfiguration :
         InMemoryEndpointConfiguration,
         IInMemoryBusConfiguration
     {
-        readonly IHostCollection<IInMemoryHostConfiguration> _hosts;
+        readonly IInMemoryEndpointConfiguration _busEndpointConfiguration;
+        readonly BusObservable _busObservers;
+        readonly IInMemoryHostConfiguration _hostConfiguration;
 
-        public InMemoryBusConfiguration(IInMemoryTopologyConfiguration topologyConfiguration)
+        public InMemoryBusConfiguration(IInMemoryTopologyConfiguration topologyConfiguration, Uri baseAddress)
             : base(topologyConfiguration)
         {
-            _hosts = new HostCollection<IInMemoryHostConfiguration>();
+            _hostConfiguration = new InMemoryHostConfiguration(this, baseAddress, topologyConfiguration);
+            _busEndpointConfiguration = CreateEndpointConfiguration();
+
+            _busObservers = new BusObservable();
         }
 
-        public IInMemoryHostConfiguration[] Hosts => _hosts.Hosts;
+        IHostConfiguration IBusConfiguration.HostConfiguration => _hostConfiguration;
+        IEndpointConfiguration IBusConfiguration.BusEndpointConfiguration => _busEndpointConfiguration;
+        IBusObserver IBusConfiguration.BusObservers => _busObservers;
 
-        public bool TryGetHost(Uri address, out IInMemoryHostConfiguration host)
+        IInMemoryEndpointConfiguration IInMemoryBusConfiguration.BusEndpointConfiguration => _busEndpointConfiguration;
+        IInMemoryHostConfiguration IInMemoryBusConfiguration.HostConfiguration => _hostConfiguration;
+
+        public ConnectHandle ConnectBusObserver(IBusObserver observer)
         {
-            return _hosts.TryGetHost(address, out host);
+            return _busObservers.Connect(observer);
         }
 
-        public IInMemoryHostConfiguration CreateHostConfiguration(InMemoryHost host)
+        public ConnectHandle ConnectEndpointConfigurationObserver(IEndpointConfigurationObserver observer)
         {
-            var hostConfiguration = new InMemoryHostConfiguration(this, host);
-
-            _hosts.Add(hostConfiguration);
-
-            return hostConfiguration;
+            return _hostConfiguration.ConnectEndpointConfigurationObserver(observer);
         }
-
-        public IInMemoryReceiveEndpointConfiguration CreateReceiveEndpointConfiguration(string queueName, IInMemoryEndpointConfiguration endpointConfiguration)
-        {
-            if (_hosts.Count == 0)
-                throw new ConfigurationException("At least one host must be configured");
-
-            return new InMemoryReceiveEndpointConfiguration(_hosts[0], queueName, endpointConfiguration);
-        }
-
-        IReadOnlyHostCollection IBusConfiguration.Hosts => _hosts;
     }
 }

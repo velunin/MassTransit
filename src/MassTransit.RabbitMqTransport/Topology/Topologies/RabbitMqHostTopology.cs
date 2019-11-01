@@ -1,26 +1,12 @@
-// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.RabbitMqTransport.Topology.Topologies
 {
     using System;
     using System.Text;
     using Configuration;
-    using EndpointSpecifications;
     using MassTransit.Topology.Topologies;
+    using Metadata;
     using Settings;
-    using Specifications;
     using Transports;
-    using Util;
 
 
     public class RabbitMqHostTopology :
@@ -30,39 +16,36 @@ namespace MassTransit.RabbitMqTransport.Topology.Topologies
         readonly IExchangeTypeSelector _exchangeTypeSelector;
         readonly Uri _hostAddress;
         readonly IMessageNameFormatter _messageNameFormatter;
-        readonly IRabbitMqTopologyConfiguration _topologyConfiguration;
+        readonly IRabbitMqTopologyConfiguration _configuration;
 
         public RabbitMqHostTopology(IExchangeTypeSelector exchangeTypeSelector, IMessageNameFormatter messageNameFormatter,
-            Uri hostAddress, IRabbitMqTopologyConfiguration topologyConfiguration)
-            : base(topologyConfiguration)
+            Uri hostAddress, IRabbitMqTopologyConfiguration configuration)
+            : base(configuration)
         {
             _exchangeTypeSelector = exchangeTypeSelector;
             _messageNameFormatter = messageNameFormatter;
             _hostAddress = hostAddress;
-            _topologyConfiguration = topologyConfiguration;
+            _configuration = configuration;
         }
 
-        IRabbitMqPublishTopology IRabbitMqHostTopology.PublishTopology => _topologyConfiguration.Publish;
-        IRabbitMqSendTopology IRabbitMqHostTopology.SendTopology => _topologyConfiguration.Send;
+        IRabbitMqPublishTopology IRabbitMqHostTopology.PublishTopology => _configuration.Publish;
+        IRabbitMqSendTopology IRabbitMqHostTopology.SendTopology => _configuration.Send;
 
         IRabbitMqMessagePublishTopology<T> IRabbitMqHostTopology.Publish<T>()
         {
-            return _topologyConfiguration.Publish.GetMessageTopology<T>();
+            return _configuration.Publish.GetMessageTopology<T>();
         }
 
         IRabbitMqMessageSendTopology<T> IRabbitMqHostTopology.Send<T>()
         {
-            return _topologyConfiguration.Send.GetMessageTopology<T>();
-        }
-
-        public SendSettings GetSendSettings(Uri address)
-        {
-            return _topologyConfiguration.Send.GetSendSettings(address);
+            return _configuration.Send.GetMessageTopology<T>();
         }
 
         public Uri GetDestinationAddress(string exchangeName, Action<IExchangeConfigurator> configure = null)
         {
-            var sendSettings = new RabbitMqSendSettings(exchangeName, _exchangeTypeSelector.DefaultExchangeType, true, false);
+            var address = new RabbitMqEndpointAddress(_hostAddress, new Uri($"exchange:{exchangeName}"));
+
+            var sendSettings = new RabbitMqSendSettings(address);
 
             configure?.Invoke(sendSettings);
 
@@ -71,16 +54,26 @@ namespace MassTransit.RabbitMqTransport.Topology.Topologies
 
         public Uri GetDestinationAddress(Type messageType, Action<IExchangeConfigurator> configure = null)
         {
+            var exchangeName = _messageNameFormatter.GetMessageName(messageType).ToString();
             var isTemporary = TypeMetadataCache.IsTemporaryMessageType(messageType);
+            var address = new RabbitMqEndpointAddress(_hostAddress, new Uri($"exchange:{exchangeName}?temporary={isTemporary}"));
 
-            var durable = !isTemporary;
-            var autoDelete = isTemporary;
-
-            var name = _messageNameFormatter.GetMessageName(messageType).ToString();
-
-            var settings = new RabbitMqSendSettings(name, _exchangeTypeSelector.DefaultExchangeType, durable, autoDelete);
+            var settings = new RabbitMqSendSettings(address);
 
             configure?.Invoke(settings);
+
+            return settings.GetSendAddress(_hostAddress);
+        }
+
+        public Uri GetDelayedExchangeDestinationAddress(Uri address)
+        {
+            var endpointAddress = new RabbitMqEndpointAddress(_hostAddress, address);
+
+            var delayedExchangeAddress = endpointAddress.GetDelayAddress();
+
+            var settings = new RabbitMqSendSettings(delayedExchangeAddress);
+
+            settings.BindToExchange(endpointAddress.Name);
 
             return settings.GetSendAddress(_hostAddress);
         }

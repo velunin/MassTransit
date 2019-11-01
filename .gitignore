@@ -53,3 +53,14 @@ _book
 .vscode
 **/.idea/
 appsettings.Development.json
+package-lock.json
+
+
+# Cake
+tools/**
+!tools/packages.config
+
+# Artifacts
+artifacts/**
+artifacts_old/**
+/src/.ionide

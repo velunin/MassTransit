@@ -1,26 +1,18 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.ActiveMqTransport.Tests
 {
     using System;
+    using System.Collections.Generic;
     using System.Linq;
     using System.Threading;
     using System.Threading.Tasks;
+    using Configurators;
     using GreenPipes.Internals.Extensions;
     using MassTransit.Testing;
     using NUnit.Framework;
     using TestFramework.Messages;
     using Testing;
+    using Topology.Topologies;
+    using Util;
 
 
     [TestFixture]
@@ -115,19 +107,29 @@ namespace MassTransit.ActiveMqTransport.Tests
     [TestFixture]
     public class Configuring_ActiveMQ
     {
+        const string TestBrokerHost = "b-15a8b984-a883-4143-a4e7-8f97bc5db37d-1.mq.us-east-2.amazonaws.com";
+        const string TestUsername = "masstransit-build";
+        const string TestPassword = "build-Br0k3r";
+
+        readonly string[] FailoverHosts = new string[]
+        {
+
+        };
+
+
         [Test]
         public async Task Should_succeed_and_connect_when_properly_configured()
         {
-            TaskCompletionSource<bool> received = new TaskCompletionSource<bool>();
+            TaskCompletionSource<bool> received = TaskUtil.GetTask<bool>();
 
             Uri sendAddress = null;
 
             var busControl = Bus.Factory.CreateUsingActiveMq(cfg =>
             {
-                var host = cfg.Host("b-15a8b984-a883-4143-a4e7-8f97bc5db37d-1.mq.us-east-2.amazonaws.com", 61617, h =>
+                var host = cfg.Host(TestBrokerHost, 61617, h =>
                 {
-                    h.Username("masstransit-build");
-                    h.Password("build-Br0k3r");
+                    h.Username(TestUsername);
+                    h.Password(TestPassword);
 
                     h.UseSsl();
                 });
@@ -157,7 +159,7 @@ namespace MassTransit.ActiveMqTransport.Tests
 
             await sendEndpoint.Send(new PingMessage());
 
-            await received.Task.UntilCompletedOrTimeout(TimeSpan.FromSeconds(5));
+            await received.Task.OrTimeout(TimeSpan.FromSeconds(5));
 
             await busControl.StopAsync();
         }
@@ -167,10 +169,10 @@ namespace MassTransit.ActiveMqTransport.Tests
         {
             var bus = Bus.Factory.CreateUsingActiveMq(sbc =>
             {
-                var host = sbc.Host("b-15a8b984-a883-4143-a4e7-8f97bc5db37d-1.mq.us-east-2.amazonaws.com", 61617, h =>
+                var host = sbc.Host(TestBrokerHost, 61617, h =>
                 {
-                    h.Username("masstransit-build");
-                    h.Password("build-Br0k3r");
+                    h.Username(TestUsername);
+                    h.Password(TestPassword);
 
                     h.UseSsl();
                 });
@@ -210,6 +212,14 @@ namespace MassTransit.ActiveMqTransport.Tests
             await busControl.StartAsync(new CancellationTokenSource(10000).Token);
 
             await busControl.StopAsync(new CancellationTokenSource(10000).Token);
+        }
+
+        [Test]
+        public async Task Pub_Sub_Queue_Names_Should_Not_Contain_Periods()
+        {
+            var consumeTopology = new ActiveMqConsumeTopology(null, null);
+            var queueName = consumeTopology.CreateTemporaryQueueName("bus.test");
+            Assert.That(queueName, Does.Not.Contain('.'));
         }
 
         [Test]
@@ -256,7 +266,7 @@ namespace MassTransit.ActiveMqTransport.Tests
 
             Assert.That(handler2.Consumed.Select().Any(), Is.True);
 
-            await harness.Stop().UntilCompletedOrTimeout(5000);
+            await harness.Stop().OrTimeout(s:5);
 
             await harness.Stop();
         }
@@ -278,14 +288,75 @@ namespace MassTransit.ActiveMqTransport.Tests
         {
             var busControl = Bus.Factory.CreateUsingActiveMq(cfg =>
             {
-                cfg.Host("b-15a8b984-a883-4143-a4e7-8f97bc5db37d-1.mq.us-east-2.amazonaws.com", 61617, h =>
+                cfg.Host(TestBrokerHost, 61617, h =>
                 {
-                    h.Username("masstransit-build");
-                    h.Password("build-Br0k3r");
+                    h.Username(TestUsername);
+                    h.Password(TestPassword);
 
                     h.UseSsl();
                 });
             });
+        }
+
+        [Test]
+        public void Failover_should_take_precendence_in_uri_construction()
+        {
+            var settings = new ConfigurationHostSettings()
+            {
+                Host = "fake-host",
+                Port = 61616,
+                FailoverHosts = new []
+                {
+                    "failover1",
+                    "failover2"
+                }
+            };
+
+            Assert.That(settings.BrokerAddress, Is.EqualTo(new Uri("activemq:failover:(tcp://failover1:61616/,tcp://failover2:61616/)")));
+        }
+
+        [Test]
+        public async Task Should_do_a_bunch_of_requests_and_responses_on_failover_transport()
+        {
+            if (FailoverHosts.Length == 0)
+            {
+                // Ignoring this test if there are no failovers
+                return;
+            }
+
+            var bus = Bus.Factory.CreateUsingActiveMq(sbc =>
+            {
+                var host = sbc.Host("activemq-cluster", 61617, h =>
+                {
+                    h.Username(TestUsername);
+                    h.Password(TestPassword);
+                    h.FailoverHosts(FailoverHosts);
+                    h.TransportOptions(new Dictionary<string, string>()
+                    {
+                        { "transport.randomize", "true" }
+                    });
+
+                    h.UseSsl();
+                });
+
+                sbc.ReceiveEndpoint(host, "test", e =>
+                {
+                    e.Handler<PingMessage>(async context => await context.RespondAsync(new PongMessage(context.Message.CorrelationId)));
+                });
+            });
+
+            await bus.StartAsync();
+            try
+            {
+                for (var i = 0; i < 100; i = i + 1)
+                {
+                    var result = await bus.Request<PingMessage, PongMessage>(new PingMessage());
+                }
+            }
+            finally
+            {
+                await bus.StopAsync();
+            }
         }
     }
 }

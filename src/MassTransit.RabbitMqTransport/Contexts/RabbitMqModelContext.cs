@@ -1,16 +1,4 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.RabbitMqTransport.Contexts
+﻿namespace MassTransit.RabbitMqTransport.Contexts
 {
     using System;
     using System.Collections.Concurrent;
@@ -19,36 +7,32 @@ namespace MassTransit.RabbitMqTransport.Contexts
     using System.Text;
     using System.Threading;
     using System.Threading.Tasks;
+    using Context;
     using GreenPipes;
-    using GreenPipes.Payloads;
     using Integration;
-    using Logging;
     using RabbitMQ.Client;
     using RabbitMQ.Client.Events;
-    using Topology;
     using Util;
 
 
     public class RabbitMqModelContext :
-        BasePipeContext,
+        ScopePipeContext,
         ModelContext,
         IAsyncDisposable
     {
-        static readonly ILog _log = Logger.Get<RabbitMqModelContext>();
-
         readonly ConnectionContext _connectionContext;
-        readonly IRabbitMqHost _host;
         readonly IModel _model;
+        readonly CancellationToken _cancellationToken;
         readonly ConcurrentDictionary<ulong, PendingPublish> _published;
         readonly LimitedConcurrencyLevelTaskScheduler _taskScheduler;
         ulong _publishTagMax;
 
-        public RabbitMqModelContext(ConnectionContext connectionContext, IModel model, IRabbitMqHost host, CancellationToken cancellationToken)
-            : base(new PayloadCacheScope(connectionContext), cancellationToken)
+        public RabbitMqModelContext(ConnectionContext connectionContext, IModel model, CancellationToken cancellationToken)
+            : base(connectionContext)
         {
             _connectionContext = connectionContext;
             _model = model;
-            _host = host;
+            _cancellationToken = cancellationToken;
 
             _published = new ConcurrentDictionary<ulong, PendingPublish>();
             _taskScheduler = new LimitedConcurrencyLevelTaskScheduler(1);
@@ -58,29 +42,39 @@ namespace MassTransit.RabbitMqTransport.Contexts
             _model.BasicNacks += OnBasicNacks;
             _model.BasicReturn += OnBasicReturn;
 
-            if (host.Settings.PublisherConfirmation)
+            if (_connectionContext.PublisherConfirmation)
                 _model.ConfirmSelect();
         }
 
         public Task DisposeAsync(CancellationToken cancellationToken)
         {
-            if (_log.IsDebugEnabled)
-                _log.DebugFormat("Closing model: {0} / {1}", _model.ChannelNumber, _connectionContext.Description);
+            LogContext.Debug?.Log("Closing model: {ChannelNumber} {Host}", _model.ChannelNumber, _connectionContext.Description);
 
             try
             {
-                if (_host.Settings.PublisherConfirmation && _model.IsOpen && _published.Count > 0)
+                if (_connectionContext.PublisherConfirmation && _model.IsOpen && _published.Count > 0)
                 {
-                    _model.WaitForConfirms(TimeSpan.FromSeconds(30), out var timedOut);
-                    if (timedOut)
-                        _log.WarnFormat("Timeout waiting for pending confirms: {0}", _connectionContext.Description);
-                    else
-                        _log.DebugFormat("Pending confirms complete: {0}", _connectionContext.Description);
+                    bool timedOut;
+                    do
+                    {
+                        if (cancellationToken.IsCancellationRequested)
+                            break;
+
+                        _model.WaitForConfirms(_connectionContext.StopTimeout, out timedOut);
+                        if (timedOut)
+                            LogContext.Warning?.Log("Timeout waiting for pending confirms:  {ChannelNumber} {Host}", _model.ChannelNumber,
+                                _connectionContext.Description);
+                        else
+                            LogContext.Debug?.Log("Pending confirms complete:  {ChannelNumber} {Host}", _model.ChannelNumber,
+                                _connectionContext.Description);
+                    }
+                    while (timedOut);
                 }
             }
             catch (Exception ex)
             {
-                _log.Error("Fault waiting for confirms", ex);
+                LogContext.Error?.Log(ex, "Fault waiting for pending confirms:  {ChannelNumber} {Host}", _model.ChannelNumber,
+                    _connectionContext.Description);
             }
 
             _model.Cleanup(200, "ModelContext Disposed");
@@ -88,16 +82,16 @@ namespace MassTransit.RabbitMqTransport.Contexts
             return TaskUtil.Completed;
         }
 
+        CancellationToken PipeContext.CancellationToken => _cancellationToken;
+
         IModel ModelContext.Model => _model;
 
         ConnectionContext ModelContext.ConnectionContext => _connectionContext;
 
-        IRabbitMqPublishTopology ModelContext.PublishTopology => _host.Topology.PublishTopology;
-
         async Task ModelContext.BasicPublishAsync(string exchange, string routingKey, bool mandatory, IBasicProperties basicProperties, byte[] body,
             bool awaitAck)
         {
-            if (_host.Settings.PublisherConfirmation)
+            if (_connectionContext.PublisherConfirmation)
             {
                 var pendingPublish = await Task.Factory.StartNew(() => PublishAsync(exchange, routingKey, mandatory, basicProperties, body),
                     CancellationToken, TaskCreationOptions.None, _taskScheduler).ConfigureAwait(false);
@@ -187,22 +181,18 @@ namespace MassTransit.RabbitMqTransport.Contexts
 
         void OnBasicReturn(object model, BasicReturnEventArgs args)
         {
-            if (_log.IsDebugEnabled)
-                _log.DebugFormat("BasicReturn: {0}-{1} {2}", args.ReplyCode, args.ReplyText, args.BasicProperties.MessageId);
+            LogContext.Debug?.Log("BasicReturn: {ReplyCode}-{ReplyText} {MessageId}", args.ReplyCode, args.ReplyText, args.BasicProperties.MessageId);
 
-            object value;
-            if (args.BasicProperties.Headers.TryGetValue("publishId", out value))
+            if (args.BasicProperties.Headers.TryGetValue("publishId", out var value))
             {
                 var bytes = value as byte[];
                 if (bytes == null)
                     return;
 
-                ulong id;
-                if (!ulong.TryParse(Encoding.UTF8.GetString(bytes), out id))
+                if (!ulong.TryParse(Encoding.UTF8.GetString(bytes), out var id))
                     return;
 
-                PendingPublish published;
-                if (_published.TryRemove(id, out published))
+                if (_published.TryRemove(id, out var published))
                     published.PublishReturned(args.ReplyCode, args.ReplyText);
             }
         }
@@ -227,8 +217,7 @@ namespace MassTransit.RabbitMqTransport.Contexts
             }
             catch
             {
-                PendingPublish ignored;
-                _published.TryRemove(publishTag, out ignored);
+                _published.TryRemove(publishTag, out _);
 
                 throw;
             }
@@ -266,6 +255,7 @@ namespace MassTransit.RabbitMqTransport.Contexts
             }
             catch (Exception)
             {
+                // ignored
             }
         }
 
@@ -276,15 +266,13 @@ namespace MassTransit.RabbitMqTransport.Contexts
                 ulong[] ids = _published.Keys.Where(x => x <= args.DeliveryTag).ToArray();
                 foreach (var id in ids)
                 {
-                    PendingPublish value;
-                    if (_published.TryRemove(id, out value))
+                    if (_published.TryRemove(id, out var value))
                         value.Nack();
                 }
             }
             else
             {
-                PendingPublish value;
-                if (_published.TryRemove(args.DeliveryTag, out value))
+                if (_published.TryRemove(args.DeliveryTag, out var value))
                     value.Nack();
             }
         }
@@ -296,15 +284,13 @@ namespace MassTransit.RabbitMqTransport.Contexts
                 ulong[] ids = _published.Keys.Where(x => x <= args.DeliveryTag).ToArray();
                 foreach (var id in ids)
                 {
-                    PendingPublish value;
-                    if (_published.TryRemove(id, out value))
+                    if (_published.TryRemove(id, out var value))
                         value.Ack();
                 }
             }
             else
             {
-                PendingPublish value;
-                if (_published.TryRemove(args.DeliveryTag, out value))
+                if (_published.TryRemove(args.DeliveryTag, out var value))
                     value.Ack();
             }
         }

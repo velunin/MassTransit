@@ -1,42 +1,29 @@
-﻿// Copyright 2007-2017 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.Azure.ServiceBus.Core.Tests
+﻿namespace MassTransit.Azure.ServiceBus.Core.Tests
 {
     using System;
     using System.Threading.Tasks;
     using NUnit.Framework;
     using TestFramework.Messages;
+    using Util;
 
 
-    [TestFixture, Explicit]
+    [TestFixture]
     public class Renewing_a_lock_on_an_existing_message :
         AzureServiceBusTestFixture
     {
         public Renewing_a_lock_on_an_existing_message()
         {
-            TestTimeout = TimeSpan.FromMinutes(3);
+            TestTimeout = TimeSpan.FromMinutes(30);
         }
 
         protected override void ConfigureServiceBusReceiveEndpoint(IServiceBusReceiveEndpointConfigurator configurator)
         {
-            configurator.LockDuration = TimeSpan.FromSeconds(60);
-
-            configurator.UseRenewLock(TimeSpan.FromSeconds(20));
+            configurator.LockDuration = TimeSpan.FromMinutes(5);
+            configurator.MaxAutoRenewDuration = TimeSpan.FromMinutes(20);
 
             configurator.Consumer<PingConsumer>();
         }
 
-        [OneTimeSetUp]
         public async Task Setup()
         {
             await InputQueueSendEndpoint.Send(new PingMessage());
@@ -48,17 +35,20 @@ namespace MassTransit.Azure.ServiceBus.Core.Tests
             var context = await PingConsumer.Completed.Task;
         }
 
+
         class PingConsumer :
             IConsumer<PingMessage>
         {
-            public static TaskCompletionSource<PingMessage> Completed = new TaskCompletionSource<PingMessage>();
+            public static TaskCompletionSource<PingMessage> Completed = TaskUtil.GetTask<PingMessage>();
 
             public async Task Consume(ConsumeContext<PingMessage> context)
             {
-                await Task.Delay(TimeSpan.FromMinutes(2), context.CancellationToken).ConfigureAwait(false);
+                Console.WriteLine($"Consumer Starting at {DateTime.Now} (redeliver: {context.ReceiveContext.Redelivered}");
 
+                await Task.Delay(TimeSpan.FromMinutes(15), context.CancellationToken).ConfigureAwait(false);
+
+                Console.WriteLine($"Consumer Completed at {DateTime.Now}");
                 Completed.TrySetResult(context.Message);
-
             }
         }
     }

@@ -1,16 +1,4 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the
-// License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.HttpTransport.Configuration
+﻿namespace MassTransit.HttpTransport.Configuration
 {
     using System;
     using Builders;
@@ -18,9 +6,9 @@ namespace MassTransit.HttpTransport.Configuration
     using GreenPipes.Builders;
     using GreenPipes.Configurators;
     using MassTransit.Configuration;
-    using MassTransit.Context;
     using Transport;
     using Transports;
+    using Util;
 
 
     public class HttpReceiveEndpointConfiguration :
@@ -34,45 +22,48 @@ namespace MassTransit.HttpTransport.Configuration
         readonly string _pathMatch;
 
         public HttpReceiveEndpointConfiguration(IHttpHostConfiguration hostConfiguration, string pathMatch, IHttpEndpointConfiguration endpointConfiguration)
-            : base(hostConfiguration, endpointConfiguration)
+            : base(endpointConfiguration)
         {
             _hostConfiguration = hostConfiguration;
             _pathMatch = pathMatch;
             _endpointConfiguration = endpointConfiguration;
 
-            HostAddress = hostConfiguration.Host.Address;
-            InputAddress = new Uri(hostConfiguration.Host.Address, $"{pathMatch}");
+            HostAddress = hostConfiguration.HostAddress;
+            InputAddress = new Uri(hostConfiguration.HostAddress, $"{pathMatch}");
 
             _httpHostPipeConfigurator = new PipeConfigurator<HttpHostContext>();
         }
 
-        IHttpReceiveEndpointConfigurator IHttpReceiveEndpointConfiguration.Configurator => this;
-
         IHttpTopologyConfiguration IHttpEndpointConfiguration.Topology => _endpointConfiguration.Topology;
-
-        public IHttpBusConfiguration BusConfiguration => _hostConfiguration.BusConfiguration;
 
         public override Uri HostAddress { get; }
 
         public override Uri InputAddress { get; }
 
-        public override IReceiveEndpoint Build()
+        public void Build(IHttpHostControl host)
         {
-            var builder = new HttpReceiveEndpointBuilder(this);
+            var builder = new HttpReceiveEndpointBuilder(host, this);
 
             ApplySpecifications(builder);
-
-            var receivePipe = CreateReceivePipe();
 
             var receiveEndpointContext = builder.CreateReceiveEndpointContext();
 
             var receiveSettings = new Settings(_pathMatch);
 
-            _httpHostPipeConfigurator.UseFilter(new HttpConsumerFilter(receivePipe, _hostConfiguration.Host.Settings, receiveSettings, receiveEndpointContext));
+            var httpConsumerFilter = new HttpConsumerFilter(_hostConfiguration.Settings, receiveSettings, receiveEndpointContext);
 
-            var transport = new HttpReceiveTransport(_hostConfiguration.Host, receiveEndpointContext, _httpHostPipeConfigurator.Build());
+            _httpHostPipeConfigurator.UseFilter(httpConsumerFilter);
 
-            return CreateReceiveEndpoint(string.IsNullOrWhiteSpace(_pathMatch) ? NewId.Next().ToString() : _pathMatch, transport, receiveEndpointContext);
+            var transport = new HttpReceiveTransport(host, receiveEndpointContext, _httpHostPipeConfigurator.Build());
+            transport.Add(httpConsumerFilter);
+
+            var receiveEndpoint = new ReceiveEndpoint(transport, receiveEndpointContext);
+
+            var queueName = string.IsNullOrWhiteSpace(_pathMatch) ? NewId.Next().ToString(FormatUtil.Formatter) : _pathMatch;
+
+            host.AddReceiveEndpoint(queueName, receiveEndpoint);
+
+            ReceiveEndpoint = receiveEndpoint;
         }
 
 

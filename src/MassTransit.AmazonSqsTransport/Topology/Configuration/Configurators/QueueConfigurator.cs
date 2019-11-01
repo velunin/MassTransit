@@ -12,6 +12,7 @@
 // specific language governing permissions and limitations under the License.
 namespace MassTransit.AmazonSqsTransport.Topology.Configuration.Configurators
 {
+    using System.Collections.Generic;
     using AmazonSqsTransport.Configuration;
     using Entities;
 
@@ -21,14 +22,26 @@ namespace MassTransit.AmazonSqsTransport.Topology.Configuration.Configurators
         IQueueConfigurator,
         Queue
     {
-        protected QueueConfigurator(string queueName, bool durable = true, bool autoDelete = false)
+        protected QueueConfigurator(string queueName, bool durable = true, bool autoDelete = false, IDictionary<string, object> queueAttributes = null, IDictionary<string, object> queueSubscriptionAttributes = null, IDictionary<string, string> queueTags = null)
             : base(queueName, durable, autoDelete)
         {
+            QueueAttributes = queueAttributes ?? new Dictionary<string, object>();
+            QueueSubscriptionAttributes = queueSubscriptionAttributes ?? new Dictionary<string, object>();
+            QueueTags = queueTags ?? new Dictionary<string, string>();
         }
 
         public QueueConfigurator(Queue source)
             : base(source.EntityName, source.Durable, source.AutoDelete)
         {
+            QueueAttributes = source.QueueAttributes;
+            QueueSubscriptionAttributes = source.QueueSubscriptionAttributes;
+            QueueTags = source.QueueTags;
         }
+
+        public IDictionary<string, object> QueueAttributes { get; set; }
+        public IDictionary<string, object> QueueSubscriptionAttributes { get; set; }
+        public IDictionary<string, string> QueueTags { get; set; }
+
+        public IDictionary<string, string> Tags => QueueTags;
     }
 }

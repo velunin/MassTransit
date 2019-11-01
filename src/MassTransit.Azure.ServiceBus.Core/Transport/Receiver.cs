@@ -1,28 +1,16 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.Azure.ServiceBus.Core.Transport
+﻿namespace MassTransit.Azure.ServiceBus.Core.Transport
 {
     using System;
     using System.Linq;
     using System.Threading;
     using System.Threading.Tasks;
+    using Context;
+    using Contexts;
     using GreenPipes;
     using GreenPipes.Agents;
     using GreenPipes.Internals.Extensions;
-    using Logging;
     using Microsoft.Azure.ServiceBus;
     using Microsoft.Azure.ServiceBus.Core;
-    using Transports;
     using Transports.Metrics;
     using Util;
 
@@ -31,31 +19,23 @@ namespace MassTransit.Azure.ServiceBus.Core.Transport
         Supervisor,
         IReceiver
     {
-        static readonly ILog _log = Logger.Get<Receiver>();
         readonly ClientContext _context;
         readonly TaskCompletionSource<bool> _deliveryComplete;
         readonly IBrokeredMessageReceiver _messageReceiver;
-        readonly IDeadLetterTransport _deadLetterTransport;
-        readonly IErrorTransport _errorTransport;
-        readonly IDeliveryTracker _tracker;
+        protected readonly IDeliveryTracker Tracker;
 
-        public Receiver(ClientContext context, IBrokeredMessageReceiver messageReceiver, IDeadLetterTransport deadLetterTransport, IErrorTransport errorTransport)
+        public Receiver(ClientContext context, IBrokeredMessageReceiver messageReceiver)
         {
             _context = context;
             _messageReceiver = messageReceiver;
-            _deadLetterTransport = deadLetterTransport;
-            _errorTransport = errorTransport;
 
-            _tracker = new DeliveryTracker(HandleDeliveryComplete);
-            _deliveryComplete = new TaskCompletionSource<bool>();
+            Tracker = new DeliveryTracker(HandleDeliveryComplete);
+            _deliveryComplete = TaskUtil.GetTask<bool>();
         }
-
-        public Task DeliveryCompleted => _deliveryComplete.Task;
-        bool IReceiver.IsStopping => IsStopping;
 
         public DeliveryMetrics GetDeliveryMetrics()
         {
-            return _tracker.GetDeliveryMetrics();
+            return Tracker.GetDeliveryMetrics();
         }
 
         public virtual Task Start()
@@ -67,18 +47,15 @@ namespace MassTransit.Azure.ServiceBus.Core.Transport
             return TaskUtil.Completed;
         }
 
-        protected IDeliveryTracker DeliveryTracker => _tracker;
-
         protected Task ExceptionHandler(ExceptionReceivedEventArgs args)
         {
             if (!(args.Exception is OperationCanceledException))
-                if (_log.IsErrorEnabled)
-                    _log.Error($"Exception received on receiver: {_context.InputAddress} during {args.ExceptionReceivedContext.Action}", args.Exception);
+                LogContext.Error?.Log(args.Exception, "Exception on Receiver {InputAddress} during {Action}", _context.InputAddress,
+                    args.ExceptionReceivedContext.Action);
 
-            if (_tracker.ActiveDeliveryCount == 0)
+            if (Tracker.ActiveDeliveryCount == 0)
             {
-                if (_log.IsDebugEnabled)
-                    _log.DebugFormat("Receiver shutdown completed: {0}", _context.InputAddress);
+                LogContext.Debug?.Log("Receiver shutdown completed: {InputAddress}", _context.InputAddress);
 
                 _deliveryComplete.TrySetResult(true);
 
@@ -92,40 +69,37 @@ namespace MassTransit.Azure.ServiceBus.Core.Transport
         {
             if (IsStopping)
             {
-                if (_log.IsDebugEnabled)
-                    _log.DebugFormat("Receiver shutdown completed: {0}", _context.InputAddress);
-
                 _deliveryComplete.TrySetResult(true);
             }
         }
 
         protected override async Task StopSupervisor(StopSupervisorContext context)
         {
-            if (_log.IsDebugEnabled)
-                _log.DebugFormat("Stopping receiver: {0}", _context.InputAddress);
+            LogContext.Debug?.Log("Stopping receiver: {InputAddress}", _context.InputAddress);
 
             SetCompleted(ActiveAndActualAgentsCompleted(context));
 
             await Completed.ConfigureAwait(false);
+
+            await _context.CloseAsync(context.CancellationToken).ConfigureAwait(false);
         }
 
         async Task ActiveAndActualAgentsCompleted(StopSupervisorContext context)
         {
-            await Task.WhenAll(context.Agents.Select(x => Completed)).UntilCompletedOrCanceled(context.CancellationToken).ConfigureAwait(false);
+            await Task.WhenAll(context.Agents.Select(x => Completed)).OrCanceled(context.CancellationToken).ConfigureAwait(false);
 
-            if (_tracker.ActiveDeliveryCount > 0)
+            if (Tracker.ActiveDeliveryCount > 0)
                 try
                 {
-                    await _deliveryComplete.Task.UntilCompletedOrCanceled(context.CancellationToken).ConfigureAwait(false);
+                    await _deliveryComplete.Task.OrCanceled(context.CancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
-                    if (_log.IsWarnEnabled)
-                        _log.WarnFormat("Stop canceled waiting for message consumers to complete: {0}", _context.InputAddress);
+                    LogContext.Warning?.Log("Stop canceled waiting for message consumers to complete: {InputAddress}", _context.InputAddress);
                 }
         }
 
-        async Task OnMessage(Microsoft.Azure.ServiceBus.Core.IMessageReceiver messageReceiver, Message message, CancellationToken cancellationToken)
+        async Task OnMessage(IReceiverClient messageReceiver, Message message, CancellationToken cancellationToken)
         {
             if (IsStopping)
             {
@@ -133,24 +107,21 @@ namespace MassTransit.Azure.ServiceBus.Core.Transport
                 return;
             }
 
-            using (var delivery = _tracker.BeginDelivery())
+            using (var delivery = Tracker.BeginDelivery())
             {
-                if (_log.IsDebugEnabled)
-                    _log.DebugFormat("Receiving {0}:{1}({2})", delivery.Id, message.MessageId, _context.EntityPath);
-
-                await _messageReceiver.Handle(message, context => AddReceiveContextPayloads(context, messageReceiver)).ConfigureAwait(false);
+                await _messageReceiver.Handle(message, context => AddReceiveContextPayloads(context, messageReceiver, message)).ConfigureAwait(false);
             }
         }
 
-        void AddReceiveContextPayloads(ReceiveContext receiveContext, Microsoft.Azure.ServiceBus.Core.IMessageReceiver messageReceiver)
+        void AddReceiveContextPayloads(ReceiveContext receiveContext, IReceiverClient receiverClient, Message message)
         {
-            receiveContext.GetOrAddPayload(() => messageReceiver);
+            MessageLockContext lockContext = new ReceiverClientMessageLockContext(receiverClient, message);
+
+            receiveContext.GetOrAddPayload(() => lockContext);
             receiveContext.GetOrAddPayload(() => _context.GetPayload<NamespaceContext>());
-            receiveContext.GetOrAddPayload(() => _errorTransport);
-            receiveContext.GetOrAddPayload(() => _deadLetterTransport);
         }
 
-        async Task WaitAndAbandonMessage(IReceiverClient receiverClient, Message message)
+        protected async Task WaitAndAbandonMessage(IReceiverClient receiverClient, Message message)
         {
             try
             {
@@ -160,8 +131,7 @@ namespace MassTransit.Azure.ServiceBus.Core.Transport
             }
             catch (Exception exception)
             {
-                if (_log.IsErrorEnabled)
-                    _log.Debug($"Stopping receiver, abandoned message faulted: {_context.InputAddress}", exception);
+                LogContext.Error?.Log(exception, "Abandon message faulted during shutdown: {InputAddress}", _context.InputAddress);
             }
         }
     }

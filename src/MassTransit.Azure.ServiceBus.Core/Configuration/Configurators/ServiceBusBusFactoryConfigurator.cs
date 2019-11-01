@@ -1,21 +1,8 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.Azure.ServiceBus.Core.Configurators
+﻿namespace MassTransit.Azure.ServiceBus.Core.Configurators
 {
     using System;
     using BusConfigurators;
     using Configuration;
-    using EndpointSpecifications;
     using MassTransit.Builders;
     using Settings;
     using Topology.Configuration;
@@ -27,30 +14,38 @@ namespace MassTransit.Azure.ServiceBus.Core.Configurators
         IServiceBusBusFactoryConfigurator,
         IBusFactory
     {
-        readonly IServiceBusBusConfiguration _configuration;
-        readonly IServiceBusEndpointConfiguration _busEndpointConfiguration;
+        readonly IServiceBusBusConfiguration _busConfiguration;
+        readonly IServiceBusHostConfiguration _hostConfiguration;
         readonly QueueConfigurator _queueConfigurator;
         readonly ReceiveEndpointSettings _settings;
 
-        public ServiceBusBusFactoryConfigurator(IServiceBusBusConfiguration busConfiguration, IServiceBusEndpointConfiguration busEndpointConfiguration)
-            : base(busConfiguration, busEndpointConfiguration)
+        public ServiceBusBusFactoryConfigurator(IServiceBusBusConfiguration busConfiguration)
+            : base(busConfiguration)
         {
-            _configuration = busConfiguration;
-            _busEndpointConfiguration = busEndpointConfiguration;
+            _busConfiguration = busConfiguration;
+            _hostConfiguration = busConfiguration.HostConfiguration;
 
-            _queueConfigurator = new QueueConfigurator("no-host-configured")
+            var queueName = _busConfiguration.Topology.Consume.CreateTemporaryQueueName("bus");
+
+            _queueConfigurator = new QueueConfigurator(queueName)
             {
-                AutoDeleteOnIdle = Defaults.TemporaryAutoDeleteOnIdle,
+                AutoDeleteOnIdle = Defaults.TemporaryAutoDeleteOnIdle
             };
 
-            _settings = new ReceiveEndpointSettings("no-host-configured", _queueConfigurator);
+            _settings = new ReceiveEndpointSettings(queueName, _queueConfigurator);
         }
 
         public IBusControl CreateBus()
         {
-            var busReceiveEndpointConfiguration = _configuration.CreateReceiveEndpointConfiguration(_settings, _busEndpointConfiguration);
+            void ConfigureBusEndpoint(IServiceBusReceiveEndpointConfigurator configurator)
+            {
+                configurator.SubscribeMessageTopics = false;
+            }
 
-            var builder = new ConfigurationBusBuilder(_configuration, busReceiveEndpointConfiguration, BusObservable);
+            var busReceiveEndpointConfiguration = _busConfiguration.HostConfiguration
+                .CreateReceiveEndpointConfiguration(_settings, _busConfiguration.BusEndpointConfiguration, ConfigureBusEndpoint);
+
+            var builder = new ConfigurationBusBuilder(_busConfiguration, busReceiveEndpointConfiguration);
 
             ApplySpecifications(builder);
 
@@ -77,89 +72,6 @@ namespace MassTransit.Azure.ServiceBus.Core.Configurators
             set => _queueConfigurator.RequiresDuplicateDetection = value;
         }
 
-        public void ReceiveEndpoint(string queueName, Action<IReceiveEndpointConfigurator> configureEndpoint)
-        {
-            var configuration = _configuration.CreateReceiveEndpointConfiguration(queueName, _configuration.CreateEndpointConfiguration());
-
-            ConfigureReceiveEndpoint(configuration, configureEndpoint);
-        }
-
-        void ConfigureReceiveEndpoint(IServiceBusReceiveEndpointConfiguration configuration, Action<IServiceBusReceiveEndpointConfigurator> configure)
-        {
-            configuration.ConnectConsumerConfigurationObserver(this);
-            configuration.ConnectSagaConfigurationObserver(this);
-            configuration.ConnectHandlerConfigurationObserver(this);
-
-            configure?.Invoke(configuration.Configurator);
-
-            var specification = new ConfigurationReceiveEndpointSpecification(configuration);
-
-            AddReceiveEndpointSpecification(specification);
-        }
-
-        void ConfigureSubscriptionEndpoint(IServiceBusSubscriptionEndpointConfiguration configuration,
-            Action<IServiceBusSubscriptionEndpointConfigurator> configure)
-        {
-            configuration.ConnectConsumerConfigurationObserver(this);
-            configuration.ConnectSagaConfigurationObserver(this);
-            configuration.ConnectHandlerConfigurationObserver(this);
-
-            configure?.Invoke(configuration.Configurator);
-
-            var specification = new ConfigurationReceiveEndpointSpecification(configuration);
-
-            AddReceiveEndpointSpecification(specification);
-        }
-
-        public void OverrideDefaultBusEndpointQueueName(string value)
-        {
-            _queueConfigurator.Path = value;
-        }
-
-        public bool DeployTopologyOnly
-        {
-            set => _configuration.DeployTopologyOnly = value;
-        }
-
-        public void Send<T>(Action<IServiceBusMessageSendTopologyConfigurator<T>> configureTopology)
-            where T : class
-        {
-            IServiceBusMessageSendTopologyConfigurator<T> configurator = _configuration.Topology.Send.GetMessageTopology<T>();
-
-            configureTopology?.Invoke(configurator);
-        }
-
-        public void Publish<T>(Action<IServiceBusMessagePublishTopologyConfigurator<T>> configureTopology)
-            where T : class
-        {
-            IServiceBusMessagePublishTopologyConfigurator<T> configurator = _configuration.Topology.Publish.GetMessageTopology<T>();
-
-            configureTopology?.Invoke(configurator);
-        }
-
-        public new IServiceBusSendTopologyConfigurator SendTopology => _configuration.Topology.Send;
-        public new IServiceBusPublishTopologyConfigurator PublishTopology => _configuration.Topology.Publish;
-
-        public IServiceBusHost Host(ServiceBusHostSettings settings)
-        {
-            if (settings == null)
-                throw new ArgumentNullException(nameof(settings));
-
-            var hostTopology = _configuration.CreateHostTopology();
-            var host = new ServiceBusHost(settings, hostTopology, _configuration);
-
-            var hostConfiguration = _configuration.CreateHostConfiguration(host);
-
-            if (_configuration.Hosts.Length == 1)
-            {
-                var path = host.Topology.CreateTemporaryQueueName("bus");
-                _queueConfigurator.Path = path;
-                _settings.Name = path;
-            }
-
-            return host;
-        }
-
         public int MaxConcurrentCalls
         {
             set
@@ -175,40 +87,96 @@ namespace MassTransit.Azure.ServiceBus.Core.Configurators
             set => _settings.PrefetchCount = value;
         }
 
-        public void ReceiveEndpoint(IServiceBusHost host, string queueName, Action<IServiceBusReceiveEndpointConfigurator> configure)
+        public void OverrideDefaultBusEndpointQueueName(string value)
         {
-            if (!_configuration.TryGetHost(host, out var hostConfiguration))
-                throw new ArgumentException("The host was not configured on this bus", nameof(host));
+            _queueConfigurator.Path = value;
+        }
 
-            var configuration = hostConfiguration.CreateReceiveEndpointConfiguration(queueName);
+        public bool DeployTopologyOnly
+        {
+            set => _hostConfiguration.DeployTopologyOnly = value;
+        }
 
-            ConfigureReceiveEndpoint(configuration, configure);
+        public void Send<T>(Action<IServiceBusMessageSendTopologyConfigurator<T>> configureTopology)
+            where T : class
+        {
+            IServiceBusMessageSendTopologyConfigurator<T> configurator = _busConfiguration.Topology.Send.GetMessageTopology<T>();
+
+            configureTopology?.Invoke(configurator);
+        }
+
+        public void Publish<T>(Action<IServiceBusMessagePublishTopologyConfigurator<T>> configureTopology)
+            where T : class
+        {
+            IServiceBusMessagePublishTopologyConfigurator<T> configurator = _busConfiguration.Topology.Publish.GetMessageTopology<T>();
+
+            configureTopology?.Invoke(configurator);
+        }
+
+        public new IServiceBusSendTopologyConfigurator SendTopology => _busConfiguration.Topology.Send;
+        public new IServiceBusPublishTopologyConfigurator PublishTopology => _busConfiguration.Topology.Publish;
+
+        public IServiceBusHost Host(ServiceBusHostSettings settings)
+        {
+            _busConfiguration.HostConfiguration.Settings = settings;
+
+            return _busConfiguration.HostConfiguration.Proxy;
+        }
+
+        public void ReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IServiceBusReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            _hostConfiguration.ReceiveEndpoint(definition, endpointNameFormatter, configureEndpoint);
+        }
+
+        public void ReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            _hostConfiguration.ReceiveEndpoint(definition, endpointNameFormatter, configureEndpoint);
+        }
+
+        public void ReceiveEndpoint(IServiceBusHost host, IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IServiceBusReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            _hostConfiguration.ReceiveEndpoint(definition, endpointNameFormatter, configureEndpoint);
+        }
+
+        public void ReceiveEndpoint(string queueName, Action<IServiceBusReceiveEndpointConfigurator> configureEndpoint)
+        {
+            _hostConfiguration.ReceiveEndpoint(queueName, configureEndpoint);
+        }
+
+        public void ReceiveEndpoint(string queueName, Action<IReceiveEndpointConfigurator> configureEndpoint)
+        {
+            _hostConfiguration.ReceiveEndpoint(queueName, configureEndpoint);
+        }
+
+        public void ReceiveEndpoint(IServiceBusHost host, string queueName, Action<IServiceBusReceiveEndpointConfigurator> configureEndpoint)
+        {
+            _hostConfiguration.ReceiveEndpoint(queueName, configureEndpoint);
         }
 
         public void SubscriptionEndpoint<T>(IServiceBusHost host, string subscriptionName, Action<IServiceBusSubscriptionEndpointConfigurator> configure)
             where T : class
         {
-            if (!_configuration.TryGetHost(host, out var hostConfiguration))
-                throw new ArgumentException("The host was not configured on this bus", nameof(host));
-
-            var settings = new SubscriptionEndpointSettings(_configuration.Topology.Publish.GetMessageTopology<T>().TopicDescription, subscriptionName);
-
-            var configuration = hostConfiguration.CreateSubscriptionEndpointConfiguration(settings);
-
-            ConfigureSubscriptionEndpoint(configuration, configure);
+            _hostConfiguration.SubscriptionEndpoint<T>(subscriptionName, configure);
         }
 
         public void SubscriptionEndpoint(IServiceBusHost host, string subscriptionName, string topicPath,
             Action<IServiceBusSubscriptionEndpointConfigurator> configure)
         {
-            if (!_configuration.TryGetHost(host, out var hostConfiguration))
-                throw new ArgumentException("The host was not configured on this bus", nameof(host));
+            _hostConfiguration.SubscriptionEndpoint(subscriptionName, topicPath, configure);
+        }
 
-            var settings = new SubscriptionEndpointSettings(topicPath, subscriptionName);
+        public void SubscriptionEndpoint<T>(string subscriptionName, Action<IServiceBusSubscriptionEndpointConfigurator> configure)
+            where T : class
+        {
+            _hostConfiguration.SubscriptionEndpoint<T>(subscriptionName, configure);
+        }
 
-            var configuration = hostConfiguration.CreateSubscriptionEndpointConfiguration(settings);
-
-            ConfigureSubscriptionEndpoint(configuration, configure);
+        public void SubscriptionEndpoint(string subscriptionName, string topicPath, Action<IServiceBusSubscriptionEndpointConfigurator> configure)
+        {
+            _hostConfiguration.SubscriptionEndpoint(subscriptionName, topicPath, configure);
         }
 
         public TimeSpan AutoDeleteOnIdle
@@ -261,15 +229,20 @@ namespace MassTransit.Azure.ServiceBus.Core.Configurators
             _settings.SelectBasicTier();
         }
 
+        public TimeSpan MessageWaitTimeout
+        {
+            set => _settings.MessageWaitTimeout = value;
+        }
+
+        public TimeSpan MaxAutoRenewDuration
+        {
+            set => _settings.MaxAutoRenewDuration = value;
+        }
+
         public void EnableDuplicateDetection(TimeSpan historyTimeWindow)
         {
             _queueConfigurator.RequiresDuplicateDetection = true;
             _queueConfigurator.DuplicateDetectionHistoryTimeWindow = historyTimeWindow;
-        }
-
-        TimeSpan IServiceBusQueueEndpointConfigurator.MessageWaitTimeout
-        {
-            set => _settings.MessageWaitTimeout = value;
         }
     }
 }

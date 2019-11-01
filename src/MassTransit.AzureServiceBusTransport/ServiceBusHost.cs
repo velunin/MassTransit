@@ -1,29 +1,16 @@
-// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.AzureServiceBusTransport
 {
     using System;
-    using System.Collections.Generic;
-    using System.Linq;
-    using System.Threading;
     using System.Threading.Tasks;
     using Configuration;
-    using Events;
+    using Context;
+    using Contexts;
+    using Definition;
     using GreenPipes;
     using GreenPipes.Agents;
-    using MassTransit.Pipeline;
-    using MassTransit.Topology;
-    using Microsoft.ServiceBus;
+    using GreenPipes.Caching;
+    using MassTransit.Configurators;
+    using Metadata;
     using Microsoft.ServiceBus.Messaging;
     using Pipeline;
     using Settings;
@@ -33,21 +20,18 @@ namespace MassTransit.AzureServiceBusTransport
 
 
     public class ServiceBusHost :
-        Supervisor,
-        IServiceBusHost,
-        IBusHostControl
+        BaseHost,
+        IServiceBusHostControl
     {
-        readonly IServiceBusReceiveEndpointFactory _receiveEndpointFactory;
-        readonly IReceiveEndpointCollection _receiveEndpoints;
-        readonly IServiceBusSubscriptionEndpointFactory _subscriptionEndpointFactory;
+        readonly IServiceBusHostConfiguration _hostConfiguration;
+        readonly IServiceBusHostTopology _hostTopology;
+        readonly IIndex<Uri, CachedSendTransport> _index;
 
-        public ServiceBusHost(ServiceBusHostSettings settings, IServiceBusHostTopology hostTopology, IServiceBusBusConfiguration busConfiguration)
+        public ServiceBusHost(IServiceBusHostConfiguration hostConfiguration, IServiceBusHostTopology hostTopology)
+            : base(hostConfiguration, hostTopology)
         {
-            Settings = settings;
-            Topology = hostTopology;
-            var busConfiguration1 = busConfiguration;
-
-            _receiveEndpoints = new ReceiveEndpointCollection();
+            _hostConfiguration = hostConfiguration;
+            _hostTopology = hostTopology;
 
             RetryPolicy = Retry.CreatePolicy(x =>
             {
@@ -55,242 +39,179 @@ namespace MassTransit.AzureServiceBusTransport
                 x.Ignore<MessagingEntityAlreadyExistsException>();
                 x.Ignore<MessageNotFoundException>();
                 x.Ignore<MessageSizeExceededException>();
-                x.Ignore<NoMatchingSubscriptionException>();
-                x.Ignore<TransactionSizeExceededException>();
 
-                x.Handle<ServerBusyException>(exception => exception.IsTransient || exception.IsWrappedExceptionTransient());
-                x.Handle<MessagingException>(exception => exception.IsTransient || exception.IsWrappedExceptionTransient());
+                x.Handle<ServerBusyException>(exception => exception.IsTransient);
                 x.Handle<TimeoutException>();
 
                 x.Interval(5, TimeSpan.FromSeconds(10));
             });
 
-            BasePath = settings.ServiceUri.AbsolutePath.Trim('/');
+            MessagingFactoryContextSupervisor = new MessagingFactoryContextSupervisor(hostConfiguration);
 
-            var serviceBusRetryPolicy = CreateRetryPolicy(settings);
+            NamespaceContextSupervisor = new NamespaceContextSupervisor(hostConfiguration);
 
-            MessagingFactoryCache = new MessagingFactoryCache(settings.ServiceUri, CreateMessagingFactorySettings(settings), serviceBusRetryPolicy);
-            NamespaceCache = new NamespaceCache(settings.ServiceUri, CreateNamespaceManagerSettings(settings, serviceBusRetryPolicy));
+            var cacheSettings = new CacheSettings(SendEndpointCacheDefaults.Capacity, SendEndpointCacheDefaults.MinAge, SendEndpointCacheDefaults.MaxAge);
 
-            NetMessagingFactoryCache = settings.TransportType == TransportType.NetMessaging
-                ? MessagingFactoryCache
-                : new MessagingFactoryCache(settings.ServiceUri, CreateMessagingFactorySettings(settings, true), serviceBusRetryPolicy);
-
-            _receiveEndpointFactory = new ServiceBusReceiveEndpointFactory(busConfiguration1, this);
-            _subscriptionEndpointFactory = new ServiceBusSubscriptionEndpointFactory(busConfiguration1, this);
+            var cache = new GreenCache<CachedSendTransport>(cacheSettings);
+            _index = cache.AddIndex("key", x => x.Address);
         }
 
-        public IReceiveEndpointCollection ReceiveEndpoints => _receiveEndpoints;
-
-        public async Task<HostHandle> Start()
-        {
-            HostReceiveEndpointHandle[] handles = ReceiveEndpoints.StartEndpoints();
-
-            return new Handle(this, handles);
-        }
-
-        public bool Matches(Uri address)
-        {
-            return Settings.ServiceUri.GetLeftPart(UriPartial.Authority).Equals(address.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase);
-        }
-
+        public IMessagingFactoryContextSupervisor MessagingFactoryContextSupervisor { get; }
+        public INamespaceContextSupervisor NamespaceContextSupervisor { get; }
         public IRetryPolicy RetryPolicy { get; }
-        public ServiceBusHostSettings Settings { get; }
-        public string BasePath { get; }
+        public ServiceBusHostSettings Settings => _hostConfiguration.Settings;
+        public IServiceBusHostTopology Topology => _hostTopology;
 
-        public IServiceBusHostTopology Topology { get; }
-
-        public IMessagingFactoryCache MessagingFactoryCache { get; }
-
-        public IMessagingFactoryCache NetMessagingFactoryCache { get; }
-
-        public INamespaceCache NamespaceCache { get; }
-
-        IHostTopology IHost.Topology => Topology;
-
-        void IProbeSite.Probe(ProbeContext context)
+        protected override void Probe(ProbeContext context)
         {
-            var scope = context.CreateScope("host");
-            scope.Set(new
+            context.Set(new
             {
                 Type = "Azure Service Bus",
-                Settings.ServiceUri,
-                Settings.OperationTimeout
+                _hostConfiguration.HostAddress,
+                _hostConfiguration.Settings.OperationTimeout
             });
 
-            _receiveEndpoints.Probe(scope);
+            NamespaceContextSupervisor.Probe(context);
+
+            MessagingFactoryContextSupervisor.Probe(context);
         }
 
-        public HostReceiveEndpointHandle ConnectReceiveEndpoint(Action<IServiceBusReceiveEndpointConfigurator> configure = null)
+        public override HostReceiveEndpointHandle ConnectReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IReceiveEndpointConfigurator> configureEndpoint = null)
         {
-            var queueName = Topology.CreateTemporaryQueueName("endpoint-");
+            return ConnectReceiveEndpoint(definition, endpointNameFormatter, configureEndpoint);
+        }
 
-            return ConnectReceiveEndpoint(queueName, configure);
+        public override HostReceiveEndpointHandle ConnectReceiveEndpoint(string queueName, Action<IReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            return ConnectReceiveEndpoint(queueName, configureEndpoint);
+        }
+
+        public HostReceiveEndpointHandle ConnectReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter = null,
+            Action<IServiceBusReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            var queueName = definition.GetEndpointName(endpointNameFormatter ?? DefaultEndpointNameFormatter.Instance);
+
+            return ConnectReceiveEndpoint(queueName, x => x.Apply(definition, configureEndpoint));
         }
 
         public HostReceiveEndpointHandle ConnectReceiveEndpoint(string queueName, Action<IServiceBusReceiveEndpointConfigurator> configure = null)
         {
-            if (_receiveEndpointFactory == null)
-                throw new ConfigurationException("The receive endpoint factory was not specified");
+            LogContext.SetCurrentIfNull(DefaultLogContext);
 
-            _receiveEndpointFactory.CreateReceiveEndpoint(queueName, configure);
+            LogContext.Debug?.Log("Connect receive endpoint: {Queue}", queueName);
 
-            return _receiveEndpoints.Start(queueName);
+            var configuration = _hostConfiguration.CreateReceiveEndpointConfiguration(queueName, configure);
+
+            BusConfigurationResult.CompileResults(configuration.Validate());
+
+            configuration.Build(this);
+
+            return ReceiveEndpoints.Start(configuration.Settings.Path);
         }
 
-        public HostReceiveEndpointHandle ConnectSubscriptionEndpoint<T>(string subscriptionName, Action<IServiceBusSubscriptionEndpointConfigurator> configure = null)
+        public HostReceiveEndpointHandle ConnectSubscriptionEndpoint<T>(string subscriptionName,
+            Action<IServiceBusSubscriptionEndpointConfigurator> configure = null)
             where T : class
         {
-            if (_subscriptionEndpointFactory == null)
-                throw new ConfigurationException("The subscription endpoint factory was not specified");
-
             var settings = new SubscriptionEndpointSettings(Topology.Publish<T>().TopicDescription, subscriptionName);
 
-            _subscriptionEndpointFactory.CreateSubscriptionEndpoint(settings, configure);
-
-            return _receiveEndpoints.Start(settings.Path);
+            return ConnectSubscriptionEndpoint(settings, configure);
         }
 
         public HostReceiveEndpointHandle ConnectSubscriptionEndpoint(string subscriptionName, string topicName,
             Action<IServiceBusSubscriptionEndpointConfigurator> configure = null)
         {
-            if (_subscriptionEndpointFactory == null)
-                throw new ConfigurationException("The subscription endpoint factory was not specified");
-
             var settings = new SubscriptionEndpointSettings(topicName, subscriptionName);
 
-            _subscriptionEndpointFactory.CreateSubscriptionEndpoint(settings, configure);
-
-            return _receiveEndpoints.Start(settings.Path);
+            return ConnectSubscriptionEndpoint(settings, configure);
         }
 
-        public Uri Address => Settings.ServiceUri;
-
-        ConnectHandle IConsumeMessageObserverConnector.ConnectConsumeMessageObserver<T>(IConsumeMessageObserver<T> observer)
+        HostReceiveEndpointHandle ConnectSubscriptionEndpoint(SubscriptionEndpointSettings settings,
+            Action<IServiceBusSubscriptionEndpointConfigurator> configure)
         {
-            return _receiveEndpoints.ConnectConsumeMessageObserver(observer);
+            LogContext.SetCurrentIfNull(DefaultLogContext);
+
+            LogContext.Debug?.Log("Connect subscription endpoint: {Topic}/{SubscriptionName}", settings.Path, settings.Name);
+
+            var configuration = _hostConfiguration.CreateSubscriptionEndpointConfiguration(settings, configure);
+
+            BusConfigurationResult.CompileResults(configuration.Validate());
+
+            configuration.Build(this);
+
+            return ReceiveEndpoints.Start(configuration.Settings.Path);
         }
 
-        ConnectHandle IConsumeObserverConnector.ConnectConsumeObserver(IConsumeObserver observer)
+        public async Task<ISendTransport> CreateSendTransport(ServiceBusEndpointAddress address)
         {
-            return _receiveEndpoints.ConnectConsumeObserver(observer);
-        }
-
-        ConnectHandle IReceiveObserverConnector.ConnectReceiveObserver(IReceiveObserver observer)
-        {
-            return _receiveEndpoints.ConnectReceiveObserver(observer);
-        }
-
-        ConnectHandle IReceiveEndpointObserverConnector.ConnectReceiveEndpointObserver(IReceiveEndpointObserver observer)
-        {
-            return _receiveEndpoints.ConnectReceiveEndpointObserver(observer);
-        }
-
-        ConnectHandle IPublishObserverConnector.ConnectPublishObserver(IPublishObserver observer)
-        {
-            return _receiveEndpoints.ConnectPublishObserver(observer);
-        }
-
-        ConnectHandle ISendObserverConnector.ConnectSendObserver(ISendObserver observer)
-        {
-            return _receiveEndpoints.ConnectSendObserver(observer);
-        }
-
-        public void AddReceiveEndpoint(string endpointName, IReceiveEndpointControl receiveEndpoint)
-        {
-            _receiveEndpoints.Add(endpointName, receiveEndpoint);
-        }
-
-        protected override async Task StopSupervisor(StopSupervisorContext context)
-        {
-            await _receiveEndpoints.Stop(context).ConfigureAwait(false);
-
-            await base.StopSupervisor(context).ConfigureAwait(false);
-        }
-
-        static RetryPolicy CreateRetryPolicy(ServiceBusHostSettings settings)
-        {
-            return new RetryExponential(settings.RetryMinBackoff, settings.RetryMaxBackoff, settings.RetryLimit);
-        }
-
-        static MessagingFactorySettings CreateMessagingFactorySettings(ServiceBusHostSettings settings, bool useNetMessaging = false)
-        {
-            var mfs = new MessagingFactorySettings
+            Task<CachedSendTransport> Create(Uri transportAddress)
             {
-                TokenProvider = settings.TokenProvider,
-                OperationTimeout = settings.OperationTimeout
-            };
+                var settings = _hostTopology.SendTopology.GetSendSettings(address);
 
-            if (settings.TransportType == TransportType.NetMessaging || useNetMessaging)
-            {
-                mfs.TransportType = TransportType.NetMessaging;
-                mfs.NetMessagingTransportSettings = settings.NetMessagingTransportSettings;
-            }
-            else
-            {
-                mfs.TransportType = TransportType.Amqp;
-                mfs.AmqpTransportSettings = settings.AmqpTransportSettings;
+                var endpointContextSupervisor = CreateQueueSendEndpointContextSupervisor(settings);
+
+                var transportContext = new HostServiceBusSendTransportContext(address, endpointContextSupervisor, SendLogContext);
+
+                var transport = new ServiceBusSendTransport(transportContext);
+                Add(transport);
+
+                return Task.FromResult(new CachedSendTransport(transportAddress, transport));
             }
 
-            return mfs;
+            return await _index.Get(address, Create).ConfigureAwait(false);
         }
 
-        static NamespaceManagerSettings CreateNamespaceManagerSettings(ServiceBusHostSettings settings, RetryPolicy retryPolicy)
+        public Task<ISendTransport> CreatePublishTransport<T>()
+            where T : class
         {
-            var nms = new NamespaceManagerSettings
-            {
-                TokenProvider = settings.TokenProvider,
-                OperationTimeout = settings.OperationTimeout,
-                RetryPolicy = retryPolicy
-            };
+            var publishTopology = _hostTopology.Publish<T>();
 
-            return nms;
+            if (!publishTopology.TryGetPublishAddress(_hostConfiguration.HostAddress, out Uri publishAddress))
+                throw new ArgumentException($"The type did not return a valid publish address: {TypeMetadataCache<T>.ShortName}");
+
+            var settings = publishTopology.GetSendSettings();
+
+            var endpointContextSupervisor = CreateTopicSendEndpointContextSupervisor(settings);
+
+            var transportContext = new HostServiceBusSendTransportContext(publishAddress, endpointContextSupervisor, SendLogContext);
+
+            var transport = new ServiceBusSendTransport(transportContext);
+            Add(transport);
+
+            return Task.FromResult<ISendTransport>(transport);
         }
 
-
-        class Handle :
-            HostHandle
+        ISendEndpointContextSupervisor CreateQueueSendEndpointContextSupervisor(SendSettings settings)
         {
-            readonly HostReceiveEndpointHandle[] _handles;
-            readonly ServiceBusHost _host;
+            IPipe<NamespaceContext> namespacePipe = CreateConfigureTopologyPipe(settings);
 
-            public Handle(ServiceBusHost host, HostReceiveEndpointHandle[] handles)
-            {
-                _host = host;
-                _handles = handles;
-            }
+            var contextFactory = new QueueSendEndpointContextFactory(MessagingFactoryContextSupervisor, NamespaceContextSupervisor,
+                Pipe.Empty<MessagingFactoryContext>(), namespacePipe, settings);
 
-            Task<HostReady> HostHandle.Ready
-            {
-                get { return ReadyOrNot(_handles.Select(x => x.Ready)); }
-            }
+            return new SendEndpointContextSupervisor(contextFactory);
+        }
 
-            async Task HostHandle.Stop(CancellationToken cancellationToken)
-            {
-                await Task.WhenAll(_handles.Select(x => x.StopAsync(cancellationToken))).ConfigureAwait(false);
+        ISendEndpointContextSupervisor CreateTopicSendEndpointContextSupervisor(SendSettings settings)
+        {
+            IPipe<NamespaceContext> namespacePipe = CreateConfigureTopologyPipe(settings);
 
-                await _host.Stop("Host Stopped", cancellationToken).ConfigureAwait(false);
+            var contextFactory = new TopicSendEndpointContextFactory(MessagingFactoryContextSupervisor, NamespaceContextSupervisor,
+                Pipe.Empty<MessagingFactoryContext>(), namespacePipe, settings);
 
-                await _host.MessagingFactoryCache.Stop("Host stopped", cancellationToken).ConfigureAwait(false);
+            return new SendEndpointContextSupervisor(contextFactory);
+        }
 
-                await _host.NamespaceCache.Stop("Host stopped", cancellationToken).ConfigureAwait(false);
-            }
+        IPipe<NamespaceContext> CreateConfigureTopologyPipe(SendSettings settings)
+        {
+            var configureTopologyFilter = new ConfigureTopologyFilter<SendSettings>(settings, settings.GetBrokerTopology(), false, Stopping);
 
-            async Task<HostReady> ReadyOrNot(IEnumerable<Task<ReceiveEndpointReady>> endpoints)
-            {
-                Task<ReceiveEndpointReady>[] readyTasks = endpoints as Task<ReceiveEndpointReady>[] ?? endpoints.ToArray();
+            return configureTopologyFilter.ToPipe();
+        }
 
-                foreach (Task<ReceiveEndpointReady> ready in readyTasks)
-                    await ready.ConfigureAwait(false);
-
-                await _host.MessagingFactoryCache.Ready.ConfigureAwait(false);
-
-                await _host.NamespaceCache.Ready.ConfigureAwait(false);
-
-                ReceiveEndpointReady[] endpointsReady = await Task.WhenAll(readyTasks).ConfigureAwait(false);
-
-                return new HostReadyEvent(_host.Address, endpointsReady);
-            }
+        protected override IAgent[] GetAgentHandles()
+        {
+            return new IAgent[] {NamespaceContextSupervisor, MessagingFactoryContextSupervisor};
         }
     }
 }

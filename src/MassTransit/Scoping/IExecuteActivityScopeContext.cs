@@ -4,9 +4,9 @@
     using Courier;
 
 
-    public interface IExecuteActivityScopeContext<out TActivity, TArguments> :
+    public interface IExecuteActivityScopeContext<out TActivity, out TArguments> :
         IDisposable
-        where TActivity : class, ExecuteActivity<TArguments>
+        where TActivity : class, IExecuteActivity<TArguments>
         where TArguments : class
     {
         ExecuteActivityContext<TActivity, TArguments> Context { get; }

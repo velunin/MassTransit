@@ -1,14 +1,18 @@
 namespace MassTransit.ExtensionsDependencyInjectionIntegration
 {
-    using Saga;
+    using System;
+    using Microsoft.Extensions.DependencyInjection;
 
 
-    public interface IServiceCollectionConfigurator
+    public interface IServiceCollectionConfigurator :
+        IRegistrationConfigurator
     {
-        void AddConsumer<T>()
-            where T : class, IConsumer;
+        IServiceCollection Collection { get; }
 
-        void AddSaga<T>()
-            where T : class, ISaga;
+        /// <summary>
+        /// Add the bus to the container, configured properly
+        /// </summary>
+        /// <param name="busFactory"></param>
+        void AddBus(Func<IServiceProvider, IBusControl> busFactory);
     }
 }

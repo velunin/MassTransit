@@ -1,14 +1,14 @@
 ﻿// Copyright 2007-2017 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
+//
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
+// this file except in compliance with the License. You may obtain a copy of the
+// License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
 // Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
+// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+// CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 namespace MassTransit.PublishPipeSpecifications
 {
@@ -20,6 +20,7 @@ namespace MassTransit.PublishPipeSpecifications
     using GreenPipes.Pipes;
     using GreenPipes.Specifications;
     using GreenPipes.Util;
+    using Metadata;
     using PipeBuilders;
     using Util;
 
@@ -32,19 +33,19 @@ namespace MassTransit.PublishPipeSpecifications
         readonly IList<ISpecificationPipeSpecification<PublishContext<TMessage>>> _implementedMessageTypeSpecifications;
         readonly IList<ISpecificationPipeSpecification<PublishContext<TMessage>>> _parentMessageSpecifications;
         readonly IList<IPipeSpecification<PublishContext<TMessage>>> _specifications;
+        readonly IList<IPipeSpecification<PublishContext>> _baseSpecifications;
 
         public MessagePublishPipeSpecification()
         {
             _specifications = new List<IPipeSpecification<PublishContext<TMessage>>>();
+            _baseSpecifications = new List<IPipeSpecification<PublishContext>>();
             _implementedMessageTypeSpecifications = new List<ISpecificationPipeSpecification<PublishContext<TMessage>>>();
             _parentMessageSpecifications = new List<ISpecificationPipeSpecification<PublishContext<TMessage>>>();
         }
 
         public void AddPipeSpecification(IPipeSpecification<PublishContext> specification)
         {
-            var splitSpecification = new SplitFilterPipeSpecification<PublishContext<TMessage>, PublishContext>(specification, MergeContext, FilterContext);
-
-            _specifications.Add(splitSpecification);
+            _baseSpecifications.Add(specification);
         }
 
         IMessagePublishPipeSpecification<T> IMessagePublishPipeSpecification.GetMessageSpecification<T>()
@@ -73,12 +74,12 @@ namespace MassTransit.PublishPipeSpecifications
 
         public IEnumerable<ValidationResult> Validate()
         {
-            return _specifications.SelectMany(x => x.Validate());
+            return _specifications.SelectMany(x => x.Validate()).Concat(_baseSpecifications.SelectMany(x => x.Validate()));
         }
 
         public void Apply(ISpecificationPipeBuilder<PublishContext<TMessage>> builder)
         {
-            if (!builder.IsDelegated)
+            if (!builder.IsDelegated && _implementedMessageTypeSpecifications.Count > 0)
             {
                 ISpecificationPipeBuilder<PublishContext<TMessage>> implementedBuilder = builder.CreateImplementedBuilder();
 
@@ -98,6 +99,16 @@ namespace MassTransit.PublishPipeSpecifications
             foreach (IPipeSpecification<PublishContext<TMessage>> specification in _specifications)
             {
                 specification.Apply(builder);
+            }
+
+            if (!builder.IsImplemented)
+            {
+                foreach (IPipeSpecification<PublishContext> specification in _baseSpecifications)
+                {
+                    var split = new SplitFilterPipeSpecification<PublishContext<TMessage>, PublishContext>(specification, MergeContext, FilterContext);
+
+                    split.Apply(builder);
+                }
             }
         }
 
@@ -130,9 +141,7 @@ namespace MassTransit.PublishPipeSpecifications
 
         static PublishContext<TMessage> MergeContext(PublishContext<TMessage> input, PublishContext context)
         {
-            var result = context as PublishContext<TMessage>;
-
-            return result ?? new PublishContextProxy<TMessage>(context, input.Message);
+            return context.GetPayload<PublishContext<TMessage>>();
         }
 
 

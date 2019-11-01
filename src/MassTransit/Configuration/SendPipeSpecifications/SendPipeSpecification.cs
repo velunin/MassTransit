@@ -70,7 +70,7 @@ namespace MassTransit.SendPipeSpecifications
             return specification.GetMessageSpecification<T>();
         }
 
-        public ConnectHandle Connect(ISendPipeSpecificationObserver observer)
+        public ConnectHandle ConnectSendPipeSpecificationObserver(ISendPipeSpecificationObserver observer)
         {
             return _observers.Connect(observer);
         }
@@ -80,10 +80,9 @@ namespace MassTransit.SendPipeSpecifications
         {
             var specification = new MessageSendPipeSpecification<T>();
 
-            foreach (var pipeSpecification in _specifications)
-            {
-                specification.AddPipeSpecification(pipeSpecification);
-            }
+            lock (_lock)
+                foreach (var pipeSpecification in _specifications)
+                    specification.AddPipeSpecification(pipeSpecification);
 
             _observers.MessageSpecificationCreated(specification);
 

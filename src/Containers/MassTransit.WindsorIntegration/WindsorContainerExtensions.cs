@@ -1,30 +1,17 @@
-// Copyright 2007-2016 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
 namespace MassTransit
 {
     using System;
     using System.Collections.Generic;
     using System.Linq;
     using Castle.MicroKernel;
+    using Castle.MicroKernel.Registration;
     using Castle.Windsor;
-    using ConsumeConfigurators;
-    using Courier;
-    using GreenPipes;
     using Internals.Extensions;
-    using PipeConfigurators;
+    using Registration;
     using Saga;
-    using SagaConfigurators;
-    using WindsorIntegration;
+    using WindsorIntegration.Configuration;
+    using WindsorIntegration.Registration;
+    using WindsorIntegration.ScopeProviders;
 
 
     /// <summary>
@@ -37,6 +24,7 @@ namespace MassTransit
         /// </summary>
         /// <param name="configurator">The configurator the extension method works on.</param>
         /// <param name="container">The Windsor container.</param>
+        [Obsolete("LoadFrom is not recommended, review the documentation and use the Consumer methods for your container instead.")]
         public static void LoadFrom(this IReceiveEndpointConfigurator configurator, IWindsorContainer container)
         {
             if (container == null)
@@ -49,105 +37,53 @@ namespace MassTransit
         /// Specify that the service bus should load its subscribers from the container passed as an argument.
         /// </summary>
         /// <param name="configurator">The configurator the extension method works on.</param>
-        /// <param name="container">The Windsor container.</param>
-        public static void LoadFrom(this IReceiveEndpointConfigurator configurator, IKernel container)
+        /// <param name="kernel">The Windsor container.</param>
+        [Obsolete("LoadFrom is not recommended, review the documentation and use the Consumer methods for your container instead.")]
+        public static void LoadFrom(this IReceiveEndpointConfigurator configurator, IKernel kernel)
         {
             if (configurator == null)
                 throw new ArgumentNullException(nameof(configurator));
-            if (container == null)
-                throw new ArgumentNullException(nameof(container));
 
-            IList<Type> consumerTypes = FindTypes<IConsumer>(container, x => !x.HasInterface<ISaga>());
+            if (kernel == null)
+                throw new ArgumentNullException(nameof(kernel));
+
+            IList<Type> consumerTypes = FindTypes<IConsumer>(kernel, x => !x.HasInterface<ISaga>());
             if (consumerTypes.Count > 0)
             {
+                var scopeProvider = new WindsorConsumerScopeProvider(kernel);
+
                 foreach (var type in consumerTypes)
-                    ConsumerConfiguratorCache.Configure(type, configurator, container);
+                    ConsumerConfiguratorCache.Configure(type, configurator, scopeProvider);
             }
 
-            IList<Type> sagaTypes = FindTypes<ISaga>(container, x => true);
+            IList<Type> sagaTypes = FindTypes<ISaga>(kernel, x => true);
             if (sagaTypes.Count > 0)
             {
+                var repositoryFactory = new WindsorSagaRepositoryFactory(kernel);
+
                 foreach (var sagaType in sagaTypes)
-                    SagaConfiguratorCache.Configure(sagaType, configurator, container);
+                    SagaConfiguratorCache.Configure(sagaType, configurator, repositoryFactory);
             }
         }
 
         /// <summary>
-        /// Register the type as a type to load from the container as a consumer.
+        /// Registers the InMemory saga repository for all saga types (generic, can be overridden)
         /// </summary>
-        /// <typeparam name="T">The type of the consumer that consumes messages</typeparam>
-        /// <param name="configurator">configurator</param>
-        /// <param name="container">The container that the consumer should be loaded from.</param>
-        /// <param name="configure"></param>
-        /// <returns>The configurator</returns>
-        public static void Consumer<T>(this IReceiveEndpointConfigurator configurator, IKernel container, Action<IConsumerConfigurator<T>> configure = null)
-            where T : class, IConsumer
+        /// <param name="container"></param>
+        public static void RegisterInMemorySagaRepository(this IWindsorContainer container)
         {
-            if (configurator == null)
-                throw new ArgumentNullException(nameof(configurator));
-            if (container == null)
-                throw new ArgumentNullException(nameof(container));
-
-            var consumerFactory = new WindsorConsumerFactory<T>(container);
-
-            configurator.Consumer(consumerFactory, configure);
+            container.Register(Component.For(typeof(ISagaRepository<>)).ImplementedBy(typeof(InMemorySagaRepository<>)).LifestyleSingleton());
         }
 
         /// <summary>
-        /// Load the saga of the generic type from the windsor container,
-        /// by loading it directly from the container.
+        /// Register the InMemory saga repository for the specified saga type
         /// </summary>
-        /// <typeparam name="T">The type of the saga</typeparam>
-        /// <param name="configurator">The configurator</param>
-        /// <param name="container">The windsor container</param>
-        /// <param name="configure"></param>
-        /// <returns>The configurator</returns>
-        public static void Saga<T>(this IReceiveEndpointConfigurator configurator, IKernel container, Action<ISagaConfigurator<T>> configure = null)
+        /// <param name="container"></param>
+        /// <typeparam name="T"></typeparam>
+        public static void RegisterInMemorySagaRepository<T>(this IWindsorContainer container)
             where T : class, ISaga
         {
-            if (configurator == null)
-                throw new ArgumentNullException(nameof(configurator));
-            if (container == null)
-                throw new ArgumentNullException(nameof(container));
-
-            var sagaRepository = container.Resolve<ISagaRepository<T>>();
-
-            var windsorSagaRepository = new WindsorSagaRepository<T>(sagaRepository, container);
-
-            configurator.Saga(windsorSagaRepository, configure);
-        }
-
-        public static void ExecuteActivityHost<TActivity, TArguments>(
-            this IReceiveEndpointConfigurator configurator,
-            Uri compensateAddress, IKernel kernel)
-            where TActivity : class, ExecuteActivity<TArguments>
-            where TArguments : class
-        {
-            var factory = new WindsorExecuteActivityFactory<TActivity, TArguments>(kernel);
-            var specification = new ExecuteActivityHostSpecification<TActivity, TArguments>(factory, compensateAddress);
-
-            configurator.AddEndpointSpecification(specification);
-        }
-
-        public static void ExecuteActivityHost<TActivity, TArguments>(
-            this IReceiveEndpointConfigurator configurator, IKernel kernel)
-            where TActivity : class, ExecuteActivity<TArguments>
-            where TArguments : class
-        {
-            var factory = new WindsorExecuteActivityFactory<TActivity, TArguments>(kernel);
-            var specification = new ExecuteActivityHostSpecification<TActivity, TArguments>(factory);
-
-            configurator.AddEndpointSpecification(specification);
-        }
-
-        public static void CompensateActivityHost<TActivity, TLog>(this IReceiveEndpointConfigurator configurator, IKernel kernel)
-            where TActivity : class, CompensateActivity<TLog>
-            where TLog : class
-        {
-            var factory = new WindsorCompensateActivityFactory<TActivity, TLog>(kernel);
-            var specification = new CompensateActivityHostSpecification<TActivity, TLog>(factory);
-
-            configurator.AddEndpointSpecification(specification);
+            container.Register(Component.For<ISagaRepository<T>>().ImplementedBy<InMemorySagaRepository<T>>().LifestyleSingleton());
         }
 
         /// <summary>

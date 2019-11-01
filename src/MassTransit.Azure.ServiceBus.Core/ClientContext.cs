@@ -18,7 +18,6 @@ namespace MassTransit.Azure.ServiceBus.Core
     using GreenPipes;
     using Microsoft.Azure.ServiceBus;
     using Microsoft.Azure.ServiceBus.Core;
-    using Transport;
 
 
     /// <summary>
@@ -42,6 +41,20 @@ namespace MassTransit.Azure.ServiceBus.Core
         /// </summary>
         /// <param name="callback"></param>
         /// <param name="exceptionHandler"></param>
-        void OnMessageAsync(Func<IMessageReceiver, Message, CancellationToken, Task> callback, Func<ExceptionReceivedEventArgs, Task> exceptionHandler);
+        void OnMessageAsync(Func<IReceiverClient, Message, CancellationToken, Task> callback, Func<ExceptionReceivedEventArgs, Task> exceptionHandler);
+
+        /// <summary>
+        /// Register a message session handler
+        /// </summary>
+        /// <param name="callback"></param>
+        /// <param name="exceptionHandler"></param>
+        void OnSessionAsync(Func<IMessageSession, Message, CancellationToken, Task> callback, Func<ExceptionReceivedEventArgs, Task> exceptionHandler);
+
+        /// <summary>
+        /// Close down the message handler on the received
+        /// </summary>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        Task CloseAsync(CancellationToken cancellationToken);
     }
 }

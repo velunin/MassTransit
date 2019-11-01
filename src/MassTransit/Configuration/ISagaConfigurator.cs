@@ -21,6 +21,7 @@ namespace MassTransit
 
     public interface ISagaConfigurator<TSaga> :
         IPipeConfigurator<SagaConsumeContext<TSaga>>,
+        ISagaConfigurationObserverConnector,
         IConsumeConfigurator
         where TSaga : class, ISaga
     {

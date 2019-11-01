@@ -1,15 +1,3 @@
-// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.HttpTransport.Contexts
 {
     using System;
@@ -18,10 +6,10 @@ namespace MassTransit.HttpTransport.Contexts
     using System.Net;
     using System.Threading;
     using System.Threading.Tasks;
+    using Configuration;
+    using Context;
     using GreenPipes;
-    using GreenPipes.Payloads;
     using Hosting;
-    using Logging;
     using Microsoft.AspNetCore;
     using Microsoft.AspNetCore.Builder;
     using Microsoft.AspNetCore.Hosting;
@@ -33,37 +21,38 @@ namespace MassTransit.HttpTransport.Contexts
         HttpHostContext,
         IAsyncDisposable
     {
-        static readonly ILog _log = Logger.Get<KestrelHttpHostContext>();
-
+        readonly IHttpHostConfiguration _configuration;
         readonly SortedDictionary<string, List<Endpoint>> _endpoints;
         IWebHost _webHost;
         bool _started;
 
-        public KestrelHttpHostContext(HttpHostSettings settings, CancellationToken cancellationToken)
-            : base(new PayloadCache(), cancellationToken)
+        public KestrelHttpHostContext(IHttpHostConfiguration configuration, CancellationToken cancellationToken)
+            : base(cancellationToken)
         {
-            HostSettings = settings;
+            _configuration = configuration;
 
             _endpoints = new SortedDictionary<string, List<Endpoint>>(StringComparer.OrdinalIgnoreCase);
         }
 
-        public HttpHostSettings HostSettings { get; }
-
-        public async Task Stop(CancellationToken cancellationToken)
-        {
-            if (_started)
-                await _webHost.StopAsync(cancellationToken).ConfigureAwait(false);
-        }
+        public HttpHostSettings HostSettings => _configuration.Settings;
 
         public async Task Start(CancellationToken cancellationToken)
         {
+            LogContext.Debug?.Log("Configuring WebHost: {Host}", _configuration.HostAddress);
+
+            IPHostEntry entries = await Dns.GetHostEntryAsync(_configuration.Settings.Host).ConfigureAwait(false);
+
             IWebHost BuildWebHost(params string[] args)
             {
                 return WebHost.CreateDefaultBuilder(args)
                     .Configure(Configure)
                     .UseKestrel(options =>
                     {
-                        options.Listen(IPAddress.Loopback, HostSettings.Port);
+                        foreach (var ipAddress in entries.AddressList)
+                        {
+                            options.Listen(ipAddress, HostSettings.Port);
+                        }
+
                         //                        options.Listen(IPAddress.Loopback, 5001, listenOptions =>
                         //                        {
                         //                            listenOptions.UseHttps("testCert.pfx", "testPassword");
@@ -72,25 +61,21 @@ namespace MassTransit.HttpTransport.Contexts
                     .Build();
             }
 
-            if (_log.IsDebugEnabled)
-                _log.DebugFormat("Building Web Host: {0}", HostSettings.Description);
+            LogContext.Debug?.Log("Building WebHost: {Host}", _configuration.HostAddress);
 
             _webHost = BuildWebHost();
 
-            if (_log.IsDebugEnabled)
-                _log.DebugFormat("Starting Web Host: {0}", HostSettings.Description);
+            LogContext.Debug?.Log("Starting WebHost: {Host}", _configuration.HostAddress);
 
             try
             {
                 await _webHost.StartAsync(cancellationToken).ConfigureAwait(false);
 
-                if (_log.IsDebugEnabled)
-                    _log.DebugFormat("Started Web Host: {0}", HostSettings.Description);
+                LogContext.Debug?.Log("Started WebHost: {Host}", _configuration.HostAddress);
             }
             catch (Exception exception)
             {
-                if (_log.IsErrorEnabled)
-                    _log.Error($"Fault Starting Web Host: {HostSettings.Description}", exception);
+                LogContext.Error?.Log(exception, "Fault starting WebHost: {Host}", _configuration.HostAddress);
 
                 throw;
             }
@@ -103,8 +88,7 @@ namespace MassTransit.HttpTransport.Contexts
             if (_started)
                 throw new InvalidOperationException("The host has already been started, no additional endpoints may be added.");
 
-            if (_log.IsDebugEnabled)
-                _log.DebugFormat("Adding Endpoint Handler: {0}", pathMatch);
+            LogContext.Debug?.Log("Adding endpoint handler: {Match}", pathMatch);
 
             lock (_endpoints)
             {

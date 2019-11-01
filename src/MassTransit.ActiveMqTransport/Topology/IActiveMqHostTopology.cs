@@ -21,15 +21,15 @@ namespace MassTransit.ActiveMqTransport.Topology
     {
         new IActiveMqPublishTopology PublishTopology { get; }
 
-        IActiveMqSendTopology SendTopology { get; }
+        new IActiveMqSendTopology SendTopology { get; }
 
         /// <summary>
         /// Returns the destination address for the specified exchange
         /// </summary>
-        /// <param name="exchangeName"></param>
+        /// <param name="topicName"></param>
         /// <param name="configure">Callback to configure exchange settings</param>
         /// <returns></returns>
-        Uri GetDestinationAddress(string exchangeName, Action<ITopicConfigurator> configure = null);
+        Uri GetDestinationAddress(string topicName, Action<ITopicConfigurator> configure = null);
 
         /// <summary>
         /// Returns the destination address for the specified message type

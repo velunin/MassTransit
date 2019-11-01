@@ -1,15 +1,3 @@
-// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the
-// License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.RabbitMqTransport.Configuration
 {
     using System;
@@ -27,6 +15,8 @@ namespace MassTransit.RabbitMqTransport.Configuration
     using Topology;
     using Topology.Settings;
     using Transport;
+    using Transports;
+    using Util;
 
 
     public class RabbitMqReceiveEndpointConfiguration :
@@ -36,19 +26,19 @@ namespace MassTransit.RabbitMqTransport.Configuration
     {
         readonly IBuildPipeConfigurator<ConnectionContext> _connectionConfigurator;
         readonly IRabbitMqEndpointConfiguration _endpointConfiguration;
-        readonly IRabbitMqHostConfiguration _hostConfiguration;
         readonly Lazy<Uri> _inputAddress;
         readonly IManagementPipe _managementPipe;
         readonly IBuildPipeConfigurator<ModelContext> _modelConfigurator;
+        readonly IRabbitMqHostConfiguration _hostConfiguration;
         readonly RabbitMqReceiveSettings _settings;
 
         public RabbitMqReceiveEndpointConfiguration(IRabbitMqHostConfiguration hostConfiguration, RabbitMqReceiveSettings settings,
             IRabbitMqEndpointConfiguration endpointConfiguration)
-            : base(hostConfiguration, endpointConfiguration)
+            : base(endpointConfiguration)
         {
+            _hostConfiguration = hostConfiguration;
             _settings = settings;
 
-            _hostConfiguration = hostConfiguration;
             _endpointConfiguration = endpointConfiguration;
 
             BindMessageExchanges = true;
@@ -57,30 +47,24 @@ namespace MassTransit.RabbitMqTransport.Configuration
             _connectionConfigurator = new PipeConfigurator<ConnectionContext>();
             _modelConfigurator = new PipeConfigurator<ModelContext>();
 
-            HostAddress = hostConfiguration.Host.Address;
-
             _inputAddress = new Lazy<Uri>(FormatInputAddress);
         }
 
         public IRabbitMqReceiveEndpointConfigurator Configurator => this;
 
-        public IRabbitMqBusConfiguration BusConfiguration => _hostConfiguration.BusConfiguration;
-
-        public IRabbitMqHostControl Host => _hostConfiguration.Host;
-
         public bool BindMessageExchanges { get; set; }
 
         public ReceiveSettings Settings => _settings;
 
-        public override Uri HostAddress { get; }
+        public override Uri HostAddress => _hostConfiguration.HostAddress;
 
         public override Uri InputAddress => _inputAddress.Value;
 
         IRabbitMqTopologyConfiguration IRabbitMqEndpointConfiguration.Topology => _endpointConfiguration.Topology;
 
-        public override IReceiveEndpoint Build()
+        public void Build(IRabbitMqHostControl host)
         {
-            var builder = new RabbitMqReceiveEndpointBuilder(this);
+            var builder = new RabbitMqReceiveEndpointBuilder(host, this);
 
             ApplySpecifications(builder);
 
@@ -89,9 +73,9 @@ namespace MassTransit.RabbitMqTransport.Configuration
             _modelConfigurator.UseFilter(new ConfigureTopologyFilter<ReceiveSettings>(_settings, receiveEndpointContext.BrokerTopology));
 
             IAgent consumerAgent;
-            if (_hostConfiguration.BusConfiguration.DeployTopologyOnly)
+            if (_hostConfiguration.DeployTopologyOnly)
             {
-                var transportReadyFilter = new TransportReadyFilter<ModelContext>(receiveEndpointContext.TransportObservers, InputAddress);
+                var transportReadyFilter = new TransportReadyFilter<ModelContext>(receiveEndpointContext);
                 _modelConfigurator.UseFilter(transportReadyFilter);
 
                 consumerAgent = transportReadyFilter;
@@ -110,18 +94,22 @@ namespace MassTransit.RabbitMqTransport.Configuration
                 consumerAgent = consumerFilter;
             }
 
-            IFilter<ConnectionContext> modelFilter = new ReceiveModelFilter(_modelConfigurator.Build(), _hostConfiguration.Host);
+            IFilter<ConnectionContext> modelFilter = new ReceiveEndpointFilter(_modelConfigurator.Build());
 
             _connectionConfigurator.UseFilter(modelFilter);
 
-            var transport = new RabbitMqReceiveTransport(_hostConfiguration.Host, _settings, _connectionConfigurator.Build(), receiveEndpointContext);
+            var transport = new RabbitMqReceiveTransport(host, _settings, _connectionConfigurator.Build(), receiveEndpointContext);
 
             transport.Add(consumerAgent);
 
-            return CreateReceiveEndpoint(_settings.QueueName ?? NewId.Next().ToString(), transport, receiveEndpointContext);
-        }
+            var receiveEndpoint = new ReceiveEndpoint(transport, receiveEndpointContext);
 
-        IRabbitMqHost IRabbitMqReceiveEndpointConfigurator.Host => Host;
+            var queueName = _settings.QueueName ?? NewId.Next().ToString(FormatUtil.Formatter);
+
+            host.AddReceiveEndpoint(queueName, receiveEndpoint);
+
+            ReceiveEndpoint = receiveEndpoint;
+        }
 
         public bool Durable
         {
@@ -183,6 +171,11 @@ namespace MassTransit.RabbitMqTransport.Configuration
             set => _settings.Lazy = value;
         }
 
+        public bool BindQueue
+        {
+            set => _settings.BindQueue = value;
+        }
+
         public TimeSpan? QueueExpiration
         {
             set => _settings.QueueExpiration = value;
@@ -190,7 +183,7 @@ namespace MassTransit.RabbitMqTransport.Configuration
 
         public string DeadLetterExchange
         {
-            set => SetQueueArgument("x-dead-letter-exchange", value);
+            set => SetQueueArgument(RabbitMQ.Client.Headers.XDeadLetterExchange, value);
         }
 
         public void SetQueueArgument(string key, object value)
@@ -211,6 +204,11 @@ namespace MassTransit.RabbitMqTransport.Configuration
         public void SetExchangeArgument(string key, TimeSpan value)
         {
             _settings.SetExchangeArgument(key, value);
+        }
+
+        public RabbitMqEndpointAddress GetEndpointAddress(Uri hostAddress)
+        {
+            return _settings.GetEndpointAddress(hostAddress);
         }
 
         public void EnablePriority(byte maxPriority)
@@ -257,7 +255,7 @@ namespace MassTransit.RabbitMqTransport.Configuration
 
         Uri FormatInputAddress()
         {
-            return _settings.GetInputAddress(_hostConfiguration.Host.Settings.HostAddress);
+            return _settings.GetInputAddress(_hostConfiguration.HostAddress);
         }
 
         protected override bool IsAlreadyConfigured()

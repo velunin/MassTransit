@@ -1,48 +1,32 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.ActiveMqTransport.Transport
+﻿namespace MassTransit.ActiveMqTransport.Transport
 {
     using System;
-    using System.Collections.Generic;
-    using System.Linq;
-    using System.Threading;
     using System.Threading.Tasks;
-    using Builders;
+    using Apache.NMS;
     using Configuration;
-    using Configurators;
-    using Events;
+    using Context;
+    using Contexts;
+    using Definition;
     using GreenPipes;
     using GreenPipes.Agents;
-    using MassTransit.Pipeline;
-    using MassTransit.Topology;
+    using MassTransit.Configurators;
+    using Pipeline;
     using Topology;
     using Transports;
 
 
     public class ActiveMqHost :
-        Supervisor,
+        BaseHost,
         IActiveMqHostControl
     {
-        readonly ActiveMqHostSettings _settings;
-        readonly IActiveMqHostTopology _topology;
-        HostHandle _handle;
+        readonly IActiveMqHostConfiguration _hostConfiguration;
+        readonly IActiveMqHostTopology _hostTopology;
 
-        public ActiveMqHost(IActiveMqBusConfiguration busConfiguration, ActiveMqHostSettings settings, IActiveMqHostTopology topology)
+        public ActiveMqHost(IActiveMqHostConfiguration hostConfiguration, IActiveMqHostTopology hostTopology)
+            : base(hostConfiguration, hostTopology)
         {
-            _settings = settings;
-            _topology = topology;
-
-            ReceiveEndpoints = new ReceiveEndpointCollection();
+            _hostConfiguration = hostConfiguration;
+            _hostTopology = hostTopology;
 
             ConnectionRetryPolicy = Retry.CreatePolicy(x =>
             {
@@ -51,154 +35,106 @@ namespace MassTransit.ActiveMqTransport.Transport
                 x.Exponential(1000, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(3));
             });
 
-            ConnectionCache = new ActiveMqConnectionCache(settings, _topology);
-
-            ReceiveEndpointFactory = new ActiveMqReceiveEndpointFactory(busConfiguration, this);
+            ConnectionContextSupervisor = new ActiveMqConnectionContextSupervisor(hostConfiguration, hostTopology);
         }
 
-        public IActiveMqReceiveEndpointFactory ReceiveEndpointFactory { get; set; }
-
-        public IReceiveEndpointCollection ReceiveEndpoints { get; }
-
-        public IConnectionCache ConnectionCache { get; }
+        public IConnectionContextSupervisor ConnectionContextSupervisor { get; }
         public IRetryPolicy ConnectionRetryPolicy { get; }
-        public ActiveMqHostSettings Settings => _settings;
-        public IActiveMqHostTopology Topology => _topology;
+        public ActiveMqHostSettings Settings => _hostConfiguration.Settings;
+        IActiveMqHostTopology IActiveMqHost.Topology => _hostTopology;
 
-        void IProbeSite.Probe(ProbeContext context)
+        protected override void Probe(ProbeContext context)
         {
-            var scope = context.CreateScope("host");
-            scope.Set(new
+            context.Set(new
             {
                 Type = "ActiveMQ",
-                _settings.Host,
-                _settings.Port,
-                _settings.Username,
-                Password = new string('*', _settings.Password.Length)
+                Settings.Host,
+                Settings.Port,
+                Settings.Username,
+                Password = new string('*', Settings.Password.Length)
             });
 
-            ConnectionCache.Probe(scope);
-
-            ReceiveEndpoints.Probe(scope);
+            ConnectionContextSupervisor.Probe(context);
         }
 
-        public Uri Address => _settings.HostAddress;
-        IHostTopology IHost.Topology => _topology;
-
-        ConnectHandle IConsumeMessageObserverConnector.ConnectConsumeMessageObserver<T>(IConsumeMessageObserver<T> observer)
+        public override HostReceiveEndpointHandle ConnectReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IReceiveEndpointConfigurator> configureEndpoint = null)
         {
-            return ReceiveEndpoints.ConnectConsumeMessageObserver(observer);
+            return ConnectReceiveEndpoint(definition, endpointNameFormatter, configureEndpoint);
         }
 
-        ConnectHandle IConsumeObserverConnector.ConnectConsumeObserver(IConsumeObserver observer)
+        public override HostReceiveEndpointHandle ConnectReceiveEndpoint(string queueName, Action<IReceiveEndpointConfigurator> configureEndpoint = null)
         {
-            return ReceiveEndpoints.ConnectConsumeObserver(observer);
+            return ConnectReceiveEndpoint(queueName, configureEndpoint);
         }
 
-        ConnectHandle IReceiveObserverConnector.ConnectReceiveObserver(IReceiveObserver observer)
+        public HostReceiveEndpointHandle ConnectReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter = null,
+            Action<IActiveMqReceiveEndpointConfigurator> configureEndpoint = null)
         {
-            return ReceiveEndpoints.ConnectReceiveObserver(observer);
-        }
+            var queueName = definition.GetEndpointName(endpointNameFormatter ?? DefaultEndpointNameFormatter.Instance);
 
-        ConnectHandle IReceiveEndpointObserverConnector.ConnectReceiveEndpointObserver(IReceiveEndpointObserver observer)
-        {
-            return ReceiveEndpoints.ConnectReceiveEndpointObserver(observer);
-        }
-
-        ConnectHandle IPublishObserverConnector.ConnectPublishObserver(IPublishObserver observer)
-        {
-            return ReceiveEndpoints.ConnectPublishObserver(observer);
-        }
-
-        ConnectHandle ISendObserverConnector.ConnectSendObserver(ISendObserver observer)
-        {
-            return ReceiveEndpoints.ConnectSendObserver(observer);
-        }
-
-        public async Task<HostHandle> Start()
-        {
-            if (_handle != null)
-                throw new MassTransitException($"The host was already started: {_settings}");
-
-            HostReceiveEndpointHandle[] handles = ReceiveEndpoints.StartEndpoints();
-
-            _handle = new Handle(handles, this, ConnectionCache);
-
-            return _handle;
-        }
-
-        public bool Matches(Uri address)
-        {
-            if (!address.Scheme.Equals("activemq", StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            var settings = new ActiveMqHostConfigurator(address).Settings;
-
-            return ActiveMqHostEqualityComparer.Default.Equals(_settings, settings);
-        }
-
-        public HostReceiveEndpointHandle ConnectReceiveEndpoint(Action<IActiveMqReceiveEndpointConfigurator> configure = null)
-        {
-            return ConnectReceiveEndpoint(_topology.CreateTemporaryQueueName("endpoint"), configure);
+            return ConnectReceiveEndpoint(queueName, x => x.Apply(definition, configureEndpoint));
         }
 
         public HostReceiveEndpointHandle ConnectReceiveEndpoint(string queueName, Action<IActiveMqReceiveEndpointConfigurator> configure = null)
         {
-            if (ReceiveEndpointFactory == null)
-                throw new ConfigurationException("The receive endpoint factory was not specified");
+            LogContext.SetCurrentIfNull(DefaultLogContext);
 
-            ReceiveEndpointFactory.CreateReceiveEndpoint(queueName, configure);
+            LogContext.Debug?.Log("Connect receive endpoint: {Queue}", queueName);
+
+            var configuration = _hostConfiguration.CreateReceiveEndpointConfiguration(queueName, configure);
+
+            BusConfigurationResult.CompileResults(configuration.Validate());
+
+            configuration.Build(this);
 
             return ReceiveEndpoints.Start(queueName);
         }
 
-        public void AddReceiveEndpoint(string endpointName, IReceiveEndpointControl receiveEndpoint)
+        public Task<ISendTransport> CreateSendTransport(ActiveMqEndpointAddress address)
         {
-            ReceiveEndpoints.Add(endpointName, receiveEndpoint);
+            var settings = _hostTopology.SendTopology.GetSendSettings(address);
+
+            var sessionContextSupervisor = CreateSessionContextSupervisor();
+
+            var configureTopology = new ConfigureTopologyFilter<SendSettings>(settings, settings.GetBrokerTopology()).ToPipe();
+
+            return CreateSendTransport(sessionContextSupervisor, configureTopology, settings.EntityName, DestinationType.Queue);
         }
 
-
-        class Handle :
-            HostHandle
+        public Task<ISendTransport> CreatePublishTransport<T>()
+            where T : class
         {
-            readonly IAgent _connectionCache;
-            readonly HostReceiveEndpointHandle[] _handles;
-            readonly ActiveMqHost _host;
+            IActiveMqMessagePublishTopology<T> publishTopology = _hostTopology.Publish<T>();
 
-            public Handle(HostReceiveEndpointHandle[] handles, ActiveMqHost host, IAgent connectionCache)
-            {
-                _host = host;
-                _handles = handles;
-                _connectionCache = connectionCache;
-            }
+            var settings = publishTopology.GetSendSettings(_hostConfiguration.HostAddress);
 
-            Task<HostReady> HostHandle.Ready
-            {
-                get { return ReadyOrNot(_handles.Select(x => x.Ready)); }
-            }
+            var sessionContextSupervisor = CreateSessionContextSupervisor();
 
-            async Task HostHandle.Stop(CancellationToken cancellationToken)
-            {
-                await Task.WhenAll(_handles.Select(x => x.StopAsync(cancellationToken))).ConfigureAwait(false);
+            var configureTopology = new ConfigureTopologyFilter<SendSettings>(settings, publishTopology.GetBrokerTopology()).ToPipe();
 
-                await _host.Stop("Host Stopped", cancellationToken).ConfigureAwait(false);
+            return CreateSendTransport(sessionContextSupervisor, configureTopology, settings.EntityName, DestinationType.Topic);
+        }
 
-                await _connectionCache.Stop("Host stopped", cancellationToken).ConfigureAwait(false);
-            }
+        ISessionContextSupervisor CreateSessionContextSupervisor()
+        {
+            return new ActiveMqSessionContextSupervisor(ConnectionContextSupervisor);
+        }
 
-            async Task<HostReady> ReadyOrNot(IEnumerable<Task<ReceiveEndpointReady>> endpoints)
-            {
-                Task<ReceiveEndpointReady>[] readyTasks = endpoints as Task<ReceiveEndpointReady>[] ?? endpoints.ToArray();
+        Task<ISendTransport> CreateSendTransport(ISessionContextSupervisor sessionContextSupervisor, IPipe<SessionContext> pipe,
+            string entityName, DestinationType destinationType)
+        {
+            var sendTransportContext = new HostActiveMqSendTransportContext(sessionContextSupervisor, pipe, entityName, destinationType, SendLogContext);
 
-                foreach (Task<ReceiveEndpointReady> ready in readyTasks)
-                    await ready.ConfigureAwait(false);
+            var transport = new ActiveMqSendTransport(sendTransportContext);
+            Add(transport);
 
-                await _connectionCache.Ready.ConfigureAwait(false);
+            return Task.FromResult<ISendTransport>(transport);
+        }
 
-                ReceiveEndpointReady[] endpointsReady = await Task.WhenAll(readyTasks).ConfigureAwait(false);
-
-                return new HostReadyEvent(_host.Address, endpointsReady);
-            }
+        protected override IAgent[] GetAgentHandles()
+        {
+            return new IAgent[] {ConnectionContextSupervisor};
         }
     }
 }

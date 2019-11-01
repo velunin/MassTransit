@@ -1,20 +1,11 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.Context
+﻿namespace MassTransit.Context
 {
     using System;
+    using System.Threading.Tasks;
     using Configuration;
+    using ConsumePipeSpecifications;
     using GreenPipes;
+    using Logging;
     using Pipeline;
     using Pipeline.Observables;
     using Topology;
@@ -25,6 +16,7 @@ namespace MassTransit.Context
         BasePipeContext,
         ReceiveEndpointContext
     {
+        readonly ILogContext _logContext;
         readonly IPublishTopologyConfigurator _publishTopology;
         readonly Lazy<IPublishEndpointProvider> _publishEndpointProvider;
         readonly Lazy<IPublishPipe> _publishPipe;
@@ -47,12 +39,18 @@ namespace MassTransit.Context
 
             _publishTopology = configuration.Topology.Publish;
 
+            ConsumePipeSpecification = configuration.Consume.Specification;
+
+            _logContext = LogContext.Current.CreateLogContext(LogCategoryName.Transport.Receive);
+
             SendObservers = new SendObservable();
             PublishObservers = new PublishObservable();
 
             _endpointObservers = configuration.EndpointObservers;
             _receiveObservers = configuration.ReceiveObservers;
             _transportObservers = configuration.TransportObservers;
+
+            Dependencies = configuration.Dependencies;
 
             _sendPipe = new Lazy<ISendPipe>(() => configuration.Send.CreatePipe());
             _publishPipe = new Lazy<IPublishPipe>(() => configuration.Publish.CreatePipe());
@@ -66,12 +64,14 @@ namespace MassTransit.Context
         }
 
         protected IPublishPipe PublishPipe => _publishPipe.Value;
-        protected ISendPipe SendPipe => _sendPipe.Value;
-        protected IMessageSerializer Serializer => _serializer.Value;
+        public ISendPipe SendPipe => _sendPipe.Value;
+        public IMessageSerializer Serializer => _serializer.Value;
 
         protected Uri HostAddress { get; }
 
-        IReceiveObserver ReceiveEndpointContext.ReceiveObservers => _receiveObservers;
+        public IConsumePipeSpecification ConsumePipeSpecification { get; }
+
+        ReceiveObservable ReceiveEndpointContext.ReceiveObservers => _receiveObservers;
 
         IReceiveTransportObserver ReceiveEndpointContext.TransportObservers => _transportObservers;
 
@@ -104,11 +104,16 @@ namespace MassTransit.Context
 
         public Uri InputAddress { get; }
 
+        public Task Dependencies { get; }
+
+        ILogContext ReceiveEndpointContext.LogContext => _logContext;
+
         IPublishTopology ReceiveEndpointContext.Publish => _publishTopology;
 
         public IReceivePipe ReceivePipe => _receivePipe.Value;
 
         public ISendEndpointProvider SendEndpointProvider => _sendEndpointProvider.Value;
+
         public IPublishEndpointProvider PublishEndpointProvider => _publishEndpointProvider.Value;
 
         protected virtual ISendEndpointProvider CreateSendEndpointProvider()

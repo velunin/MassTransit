@@ -1,22 +1,11 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.AzureServiceBusTransport.Pipeline
+﻿namespace MassTransit.AzureServiceBusTransport.Pipeline
 {
     using System;
     using System.Linq;
+    using System.Threading;
     using System.Threading.Tasks;
+    using Context;
     using GreenPipes;
-    using Logging;
     using Topology;
     using Topology.Entities;
 
@@ -26,16 +15,17 @@ namespace MassTransit.AzureServiceBusTransport.Pipeline
         where TSettings : class
     {
         readonly BrokerTopology _brokerTopology;
-        readonly ILog _log = Logger.Get<ConfigureTopologyFilter<TSettings>>();
         readonly bool _removeSubscriptions;
+        CancellationToken _cancellationToken;
 
         readonly TSettings _settings;
 
-        public ConfigureTopologyFilter(TSettings settings, BrokerTopology brokerTopology, bool removeSubscriptions)
+        public ConfigureTopologyFilter(TSettings settings, BrokerTopology brokerTopology, bool removeSubscriptions, CancellationToken cancellationToken)
         {
             _settings = settings;
             _brokerTopology = brokerTopology;
             _removeSubscriptions = removeSubscriptions;
+            _cancellationToken = cancellationToken;
         }
 
         public async Task Send(NamespaceContext context, IPipe<NamespaceContext> next)
@@ -45,25 +35,22 @@ namespace MassTransit.AzureServiceBusTransport.Pipeline
                 await ConfigureTopology(context).ConfigureAwait(false);
 
                 context.GetOrAddPayload(() => _settings);
-            }).ConfigureAwait(false);
 
-            try
-            {
-                await next.Send(context).ConfigureAwait(false);
-            }
-            finally
-            {
                 if (_removeSubscriptions)
-                    try
+                    _cancellationToken.Register(async () =>
                     {
-                        await RemoveSubscriptions(context).ConfigureAwait(false);
-                    }
-                    catch (Exception ex)
-                    {
-                        if (_log.IsWarnEnabled)
-                            _log.Warn("Failed to remove one or more subsriptions from the endpoint.", ex);
-                    }
-            }
+                        try
+                        {
+                            await RemoveSubscriptions(context).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogContext.Warning?.Log(ex, "Failed to remove one or more subscriptions from the endpoint.");
+                        }
+                    });
+            }, () => new Context()).ConfigureAwait(false);
+
+            await next.Send(context).ConfigureAwait(false);
         }
 
         public void Probe(ProbeContext context)
@@ -108,7 +95,8 @@ namespace MassTransit.AzureServiceBusTransport.Pipeline
 
         Task Create(NamespaceContext context, QueueSubscription subscription)
         {
-            return context.CreateTopicSubscription(subscription.Subscription.SubscriptionDescription, subscription.Subscription.Rule, subscription.Subscription.Filter);
+            return context.CreateTopicSubscription(subscription.Subscription.SubscriptionDescription, subscription.Subscription.Rule,
+                subscription.Subscription.Filter);
         }
 
         Task Delete(NamespaceContext context, QueueSubscription subscription)
@@ -118,7 +106,14 @@ namespace MassTransit.AzureServiceBusTransport.Pipeline
 
         Task Create(NamespaceContext context, TopicSubscription subscription)
         {
-            return context.CreateTopicSubscription(subscription.Subscription.SubscriptionDescription, subscription.Subscription.Rule, subscription.Subscription.Filter);
+            return context.CreateTopicSubscription(subscription.Subscription.SubscriptionDescription, subscription.Subscription.Rule,
+                subscription.Subscription.Filter);
+        }
+
+
+        class Context :
+            ConfigureTopologyContext<TSettings>
+        {
         }
     }
 }

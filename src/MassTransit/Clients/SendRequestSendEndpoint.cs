@@ -16,10 +16,12 @@ namespace MassTransit.Clients
     using System.Threading;
     using System.Threading.Tasks;
     using GreenPipes;
+    using Initializers;
 
 
-    public class SendRequestSendEndpoint :
-        IRequestSendEndpoint
+    public class SendRequestSendEndpoint<T> :
+        IRequestSendEndpoint<T>
+        where T : class
     {
         readonly ISendEndpointProvider _context;
         readonly Uri _destinationAddress;
@@ -30,8 +32,16 @@ namespace MassTransit.Clients
             _destinationAddress = destinationAddress;
         }
 
-        public async Task Send<T>(T message, IPipe<SendContext<T>> pipe, CancellationToken cancellationToken)
-            where T : class
+        public Task<InitializeContext<T>> CreateMessage(object values, CancellationToken cancellationToken)
+        {
+            var initializer = MessageInitializerCache<T>.GetInitializer(values.GetType());
+
+            return _context is ConsumeContext context
+                ? initializer.Initialize(initializer.Create(context), values)
+                : initializer.Initialize(values, cancellationToken);
+        }
+
+        public async Task Send(T message, IPipe<SendContext<T>> pipe, CancellationToken cancellationToken)
         {
             var sendEndpoint = await _context.GetSendEndpoint(_destinationAddress).ConfigureAwait(false);
 

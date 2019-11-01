@@ -1,16 +1,4 @@
-﻿// Copyright 2007-2015 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.Internals.Extensions
+﻿namespace MassTransit.Internals.Extensions
 {
     using System;
     using System.Collections.Generic;
@@ -22,8 +10,6 @@ namespace MassTransit.Internals.Extensions
 
     public static class TypeExtensions
     {
-        static readonly TypeNameFormatter _typeNameFormatter = new TypeNameFormatter();
-
         public static IEnumerable<PropertyInfo> GetAllProperties(this Type type)
         {
             TypeInfo typeInfo = type.GetTypeInfo();
@@ -48,7 +34,7 @@ namespace MassTransit.Internals.Extensions
             {
                 IEnumerable<PropertyInfo> sourceProperties = properties
                     .Concat(typeInfo.ImplementedInterfaces.SelectMany(x => x.GetTypeInfo().DeclaredProperties));
-                
+
                 foreach (PropertyInfo prop in sourceProperties)
                     yield return prop;
 
@@ -97,6 +83,15 @@ namespace MassTransit.Internals.Extensions
             return !typeInfo.IsAbstract && !typeInfo.IsInterface;
         }
 
+        public static bool IsInterfaceOrConcreteClass(this Type type)
+        {
+            TypeInfo typeInfo = type.GetTypeInfo();
+            if (typeInfo.IsInterface)
+                return true;
+
+            return typeInfo.IsClass && !typeInfo.IsAbstract;
+        }
+
         /// <summary>
         /// Determines if a type can be constructed, and if it can, additionally determines
         /// if the type can be assigned to the specified type.
@@ -143,6 +138,7 @@ namespace MassTransit.Internals.Extensions
             TypeInfo typeInfo = type.GetTypeInfo();
             bool isNullable = typeInfo.IsGenericType
                 && typeInfo.GetGenericTypeDefinition() == typeof(Nullable<>);
+
             underlyingType = isNullable ? Nullable.GetUnderlyingType(type) : null;
             return isNullable;
         }
@@ -152,16 +148,14 @@ namespace MassTransit.Internals.Extensions
         /// </summary>
         /// <param name="type">The type</param>
         /// <returns>True if the type is an open generic</returns>
-        public static bool IsOpenGeneric(this Type type)
-            => type.GetTypeInfo().IsOpenGeneric();
+        public static bool IsOpenGeneric(this Type type) => type.GetTypeInfo().IsOpenGeneric();
 
         /// <summary>
         /// Determines if the TypeInfo is an open generic with at least one unspecified generic argument
         /// </summary>
         /// <param name="typeInfo">The TypeInfo</param>
         /// <returns>True if the TypeInfo is an open generic</returns>
-        public static bool IsOpenGeneric(this TypeInfo typeInfo)
-            => typeInfo.IsGenericTypeDefinition || typeInfo.ContainsGenericParameters;
+        public static bool IsOpenGeneric(this TypeInfo typeInfo) => typeInfo.IsGenericTypeDefinition || typeInfo.ContainsGenericParameters;
 
         /// <summary>
         /// Determines if a type can be null
@@ -172,16 +166,6 @@ namespace MassTransit.Internals.Extensions
         {
             TypeInfo typeInfo = type.GetTypeInfo();
             return !typeInfo.IsValueType || type.IsNullable() || type == typeof(string);
-        }
-
-        /// <summary>
-        /// Returns an easy-to-read type name from the specified Type
-        /// </summary>
-        /// <param name="type"></param>
-        /// <returns></returns>
-        public static string GetTypeName(this Type type)
-        {
-            return _typeNameFormatter.GetTypeName(type);
         }
 
         /// <summary>
@@ -214,16 +198,27 @@ namespace MassTransit.Internals.Extensions
         /// </summary>
         /// <param name="type"></param>
         /// <returns></returns>
-        public static bool IsAnonymousType(this Type type)
-            => type.GetTypeInfo().IsAnonymousType();
+        public static bool IsAnonymousType(this Type type) => type.GetTypeInfo().IsAnonymousType();
 
         /// <summary>
         /// Returns true if the TypeInfo is an anonymous type
         /// </summary>
         /// <param name="typeInfo"></param>
         /// <returns></returns>
-        public static bool IsAnonymousType(this TypeInfo typeInfo)
-            =>typeInfo.HasAttribute<CompilerGeneratedAttribute>() && typeInfo.FullName.Contains("AnonymousType");
+        public static bool IsAnonymousType(this TypeInfo typeInfo) =>
+            typeInfo.HasAttribute<CompilerGeneratedAttribute>() && typeInfo.FullName.Contains("AnonymousType");
+
+        /// <summary>
+        /// Returns true if the type is an FSharp type (maybe?)
+        /// </summary>
+        /// <param name="typeInfo"></param>
+        /// <returns></returns>
+        public static bool IsFSharpType(this TypeInfo typeInfo)
+        {
+            var attributes = typeInfo.GetCustomAttributes();
+
+            return attributes.Any(attribute => attribute.GetType().FullName == "Microsoft.FSharp.Core.CompilationMappingAttribute");
+        }
 
         /// <summary>
         /// Returns true if the type is contained within the namespace
@@ -235,6 +230,23 @@ namespace MassTransit.Internals.Extensions
         {
             var subNameSpace = nameSpace + ".";
             return type.Namespace != null && (type.Namespace.Equals(nameSpace) || type.Namespace.StartsWith(subNameSpace));
+        }
+
+        /// <summary>
+        /// True if the type is a value type, or an object type that is treated as a value by MassTransit
+        /// </summary>
+        /// <param name="valueType"></param>
+        /// <returns></returns>
+        public static bool IsValueTypeOrObject(this Type valueType)
+        {
+            if (valueType.GetTypeInfo().IsValueType
+                || valueType == typeof(string)
+                || valueType == typeof(Uri)
+                || valueType == typeof(Version)
+                || typeof(Exception).IsAssignableFrom(valueType))
+                return true;
+
+            return false;
         }
     }
 }

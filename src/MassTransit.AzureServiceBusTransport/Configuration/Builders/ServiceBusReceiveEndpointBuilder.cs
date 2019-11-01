@@ -1,16 +1,4 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.AzureServiceBusTransport.Builders
+﻿namespace MassTransit.AzureServiceBusTransport.Builders
 {
     using System;
     using System.Linq;
@@ -20,22 +8,23 @@ namespace MassTransit.AzureServiceBusTransport.Builders
     using Contexts;
     using GreenPipes;
     using MassTransit.Builders;
-    using NewIdFormatters;
     using Topology;
     using Topology.Builders;
     using Transport;
+    using Util;
 
 
     public class ServiceBusReceiveEndpointBuilder :
         ReceiveEndpointBuilder,
         IReceiveEndpointBuilder
     {
-        static readonly INewIdFormatter _formatter = new ZBase32Formatter();
+        readonly IServiceBusHostControl _host;
         readonly IServiceBusReceiveEndpointConfiguration _configuration;
 
-        public ServiceBusReceiveEndpointBuilder(IServiceBusReceiveEndpointConfiguration configuration)
+        public ServiceBusReceiveEndpointBuilder(IServiceBusHostControl host, IServiceBusReceiveEndpointConfiguration configuration)
             : base(configuration)
         {
+            _host = host;
             _configuration = configuration;
         }
 
@@ -57,14 +46,16 @@ namespace MassTransit.AzureServiceBusTransport.Builders
         {
             var topologyLayout = BuildTopology(_configuration.Settings);
 
-            return new ServiceBusEntityReceiveEndpointContext(_configuration, topologyLayout);
+            return new ServiceBusEntityReceiveEndpointContext(_host, _configuration, topologyLayout);
         }
+
+        static readonly char[] Separator = {'/'};
 
         string GenerateSubscriptionName()
         {
-            var subscriptionName = _configuration.Settings.Name;
+            var subscriptionName = _configuration.Settings.Name.Split(Separator, StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
 
-            var suffix = _configuration.HostAddress.AbsolutePath.Split(new[] {'/'}, StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
+            var suffix = _configuration.HostAddress.AbsolutePath.Split(Separator, StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
             if (!string.IsNullOrWhiteSpace(suffix))
                 subscriptionName += $"-{suffix}";
 
@@ -76,7 +67,7 @@ namespace MassTransit.AzureServiceBusTransport.Builders
                 {
                     byte[] buffer = Encoding.UTF8.GetBytes(subscriptionName);
                     byte[] hash = hasher.ComputeHash(buffer);
-                    hashed = _formatter.Format(hash).Substring(0, 6);
+                    hashed = FormatUtil.Formatter.Format(hash).Substring(0, 6);
                 }
 
                 name = $"{subscriptionName.Substring(0, 43)}-{hashed}";

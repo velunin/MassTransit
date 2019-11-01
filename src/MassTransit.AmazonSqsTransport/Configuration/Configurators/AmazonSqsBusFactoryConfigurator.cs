@@ -1,27 +1,13 @@
-﻿// Copyright 2007-2017 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the
-// License at
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.AmazonSqsTransport.Configuration.Configurators
+﻿namespace MassTransit.AmazonSqsTransport.Configuration.Configurators
 {
     using System;
     using System.Collections.Generic;
     using BusConfigurators;
     using Configuration;
-    using EndpointSpecifications;
     using GreenPipes;
     using MassTransit.Builders;
     using Topology.Configuration;
     using Topology.Settings;
-    using Transport;
 
 
     public class AmazonSqsBusFactoryConfigurator :
@@ -29,25 +15,31 @@ namespace MassTransit.AmazonSqsTransport.Configuration.Configurators
         IAmazonSqsBusFactoryConfigurator,
         IBusFactory
     {
-        readonly IAmazonSqsBusConfiguration _configuration;
-        readonly IAmazonSqsEndpointConfiguration _busEndpointConfiguration;
+        readonly IAmazonSqsBusConfiguration _busConfiguration;
+        readonly IAmazonSqsHostConfiguration _hostConfiguration;
         readonly QueueReceiveSettings _settings;
 
-        public AmazonSqsBusFactoryConfigurator(IAmazonSqsBusConfiguration configuration, IAmazonSqsEndpointConfiguration busEndpointConfiguration)
-            : base(configuration, busEndpointConfiguration)
+        public AmazonSqsBusFactoryConfigurator(IAmazonSqsBusConfiguration busConfiguration)
+            : base(busConfiguration)
         {
-            _configuration = configuration;
-            _busEndpointConfiguration = busEndpointConfiguration;
+            _busConfiguration = busConfiguration;
+            _hostConfiguration = busConfiguration.HostConfiguration;
 
-            var queueName = _configuration.Topology.Consume.CreateTemporaryQueueName("bus-");
+            var queueName = _busConfiguration.Topology.Consume.CreateTemporaryQueueName("bus");
             _settings = new QueueReceiveSettings(queueName, false, true);
         }
 
         public IBusControl CreateBus()
         {
-            var busReceiveEndpointConfiguration = _configuration.CreateReceiveEndpointConfiguration(_settings, _busEndpointConfiguration);
+            void ConfigureBusEndpoint(IAmazonSqsReceiveEndpointConfigurator configurator)
+            {
+                configurator.SubscribeMessageTopics = false;
+            }
 
-            var builder = new ConfigurationBusBuilder(_configuration, busReceiveEndpointConfiguration, BusObservable);
+            var busReceiveEndpointConfiguration = _busConfiguration.HostConfiguration
+                .CreateReceiveEndpointConfiguration(_settings, _busConfiguration.BusEndpointConfiguration, ConfigureBusEndpoint);
+
+            var builder = new ConfigurationBusBuilder(_busConfiguration, busReceiveEndpointConfiguration);
 
             ApplySpecifications(builder);
 
@@ -88,67 +80,75 @@ namespace MassTransit.AmazonSqsTransport.Configuration.Configurators
             set => _settings.PurgeOnStartup = value;
         }
 
+        public void OverrideDefaultBusEndpointQueueName(string value)
+        {
+            _settings.EntityName = value;
+        }
+
+        public IDictionary<string, object> QueueAttributes => _settings.QueueAttributes;
+        public IDictionary<string, object> QueueSubscriptionAttributes => _settings.QueueSubscriptionAttributes;
+        public IDictionary<string, string> QueueTags => _settings.QueueTags;
+
+        public bool DeployTopologyOnly
+        {
+            set => _hostConfiguration.DeployTopologyOnly = value;
+        }
+
         public IAmazonSqsHost Host(AmazonSqsHostSettings settings)
         {
-            var hostTopology = _configuration.CreateHostTopology(settings.HostAddress);
+            _busConfiguration.HostConfiguration.Settings = settings;
 
-            var host = new AmazonSqsHost(_configuration, settings, hostTopology);
-
-            _configuration.CreateHostConfiguration(host);
-
-            return host;
+            return _busConfiguration.HostConfiguration.Proxy;
         }
 
         void IAmazonSqsBusFactoryConfigurator.Send<T>(Action<IAmazonSqsMessageSendTopologyConfigurator<T>> configureTopology)
         {
-            IAmazonSqsMessageSendTopologyConfigurator<T> configurator = _configuration.Topology.Send.GetMessageTopology<T>();
+            IAmazonSqsMessageSendTopologyConfigurator<T> configurator = _busConfiguration.Topology.Send.GetMessageTopology<T>();
 
             configureTopology?.Invoke(configurator);
         }
 
         void IAmazonSqsBusFactoryConfigurator.Publish<T>(Action<IAmazonSqsMessagePublishTopologyConfigurator<T>> configureTopology)
         {
-            IAmazonSqsMessagePublishTopologyConfigurator<T> configurator = _configuration.Topology.Publish.GetMessageTopology<T>();
+            IAmazonSqsMessagePublishTopologyConfigurator<T> configurator = _busConfiguration.Topology.Publish.GetMessageTopology<T>();
 
             configureTopology?.Invoke(configurator);
         }
 
-        public new IAmazonSqsSendTopologyConfigurator SendTopology => _configuration.Topology.Send;
-        public new IAmazonSqsPublishTopologyConfigurator PublishTopology => _configuration.Topology.Publish;
+        public new IAmazonSqsSendTopologyConfigurator SendTopology => _busConfiguration.Topology.Send;
+        public new IAmazonSqsPublishTopologyConfigurator PublishTopology => _busConfiguration.Topology.Publish;
 
-        public bool DeployTopologyOnly
+        public void ReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IAmazonSqsReceiveEndpointConfigurator> configureEndpoint = null)
         {
-            set => _configuration.DeployTopologyOnly = value;
+            _hostConfiguration.ReceiveEndpoint(definition, endpointNameFormatter, configureEndpoint);
+        }
+
+        public void ReceiveEndpoint(IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            _hostConfiguration.ReceiveEndpoint(definition, endpointNameFormatter, configureEndpoint);
+        }
+
+        public void ReceiveEndpoint(IAmazonSqsHost host, IEndpointDefinition definition, IEndpointNameFormatter endpointNameFormatter,
+            Action<IAmazonSqsReceiveEndpointConfigurator> configureEndpoint = null)
+        {
+            _hostConfiguration.ReceiveEndpoint(definition, endpointNameFormatter, configureEndpoint);
+        }
+
+        public void ReceiveEndpoint(string queueName, Action<IAmazonSqsReceiveEndpointConfigurator> configureEndpoint)
+        {
+            _hostConfiguration.ReceiveEndpoint(queueName, configureEndpoint);
         }
 
         public void ReceiveEndpoint(string queueName, Action<IReceiveEndpointConfigurator> configureEndpoint)
         {
-            var configuration = _configuration.CreateReceiveEndpointConfiguration(queueName, _configuration.CreateEndpointConfiguration());
-
-            ConfigureReceiveEndpoint(configuration, configureEndpoint);
+            _hostConfiguration.ReceiveEndpoint(queueName, configureEndpoint);
         }
 
-        public void ReceiveEndpoint(IAmazonSqsHost host, string queueName, Action<IAmazonSqsReceiveEndpointConfigurator> configure)
+        public void ReceiveEndpoint(IAmazonSqsHost host, string queueName, Action<IAmazonSqsReceiveEndpointConfigurator> configureEndpoint)
         {
-            if (!_configuration.TryGetHost(host, out var hostConfiguration))
-                throw new ArgumentException("The host was not configured on this bus", nameof(host));
-
-            var configuration = hostConfiguration.CreateReceiveEndpointConfiguration(queueName);
-
-            ConfigureReceiveEndpoint(configuration, configure);
-        }
-
-        void ConfigureReceiveEndpoint(IAmazonSqsReceiveEndpointConfiguration configuration, Action<IAmazonSqsReceiveEndpointConfigurator> configure)
-        {
-            configuration.ConnectConsumerConfigurationObserver(this);
-            configuration.ConnectSagaConfigurationObserver(this);
-            configuration.ConnectHandlerConfigurationObserver(this);
-
-            configure?.Invoke(configuration.Configurator);
-
-            var specification = new ConfigurationReceiveEndpointSpecification(configuration);
-
-            AddReceiveEndpointSpecification(specification);
+            _hostConfiguration.ReceiveEndpoint(queueName, configureEndpoint);
         }
     }
 }

@@ -17,6 +17,7 @@ namespace MassTransit.ConsumerSpecifications
     using System.Linq;
     using ConsumeConfigurators;
     using GreenPipes;
+    using Metadata;
     using Util;
 
 
@@ -34,11 +35,6 @@ namespace MassTransit.ConsumerSpecifications
 
             _observers = new ConsumerConfigurationObservable();
             _handles = _messageTypes.Values.Select(x => x.ConnectConsumerConfigurationObserver(_observers)).ToArray();
-        }
-
-        void IConsumerConfigurator<TConsumer>.ConfigureMessage<T>(Action<IConsumerMessageConfigurator<T>> configure)
-        {
-            Message(configure);
         }
 
         public void Message<T>(Action<IConsumerMessageConfigurator<T>> configure)
@@ -65,8 +61,7 @@ namespace MassTransit.ConsumerSpecifications
 
         public IConsumerMessageSpecification<TConsumer, T> GetMessageSpecification<T>() where T : class
         {
-            IConsumerMessageSpecification<TConsumer> specification;
-            if (!_messageTypes.TryGetValue(typeof(T), out specification))
+            if (!_messageTypes.TryGetValue(typeof(T), out IConsumerMessageSpecification<TConsumer> specification))
             {
                 throw new ArgumentException($"MessageType {TypeMetadataCache<T>.ShortName} is not consumed by {TypeMetadataCache<TConsumer>.ShortName}");
             }

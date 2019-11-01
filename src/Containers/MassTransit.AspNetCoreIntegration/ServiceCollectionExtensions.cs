@@ -1,24 +1,11 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the
-// License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the
-// specific language governing permissions and limitations under the License.
-
-namespace MassTransit.AspNetCoreIntegration
+﻿namespace MassTransit.AspNetCoreIntegration
 {
     using System;
+    using System.Diagnostics;
+    using Context;
     using ExtensionsDependencyInjectionIntegration;
-    using Logging;
-    using Logging.Tracing;
+    using HealthChecks;
     using Microsoft.Extensions.DependencyInjection;
-    using Microsoft.Extensions.DependencyInjection.Extensions;
     using Microsoft.Extensions.Hosting;
     using Microsoft.Extensions.Logging;
 
@@ -30,25 +17,22 @@ namespace MassTransit.AspNetCoreIntegration
         /// </summary>
         /// <param name="services">Service collection</param>
         /// <param name="createBus">Bus factory that loads consumers and sagas from IServiceProvider</param>
+        /// <param name="configureHealthChecks">Optional, allows you to specify custom health check names</param>
         /// <returns></returns>
-        public static IServiceCollection AddMassTransit(this IServiceCollection services, Func<IServiceProvider, IBusControl> createBus)
+        public static IServiceCollection AddMassTransit(this IServiceCollection services, Func<IServiceProvider, IBusControl> createBus,
+            Action<HealthCheckOptions> configureHealthChecks = null)
         {
-            services.TryAddSingleton(createBus);
-            services.TryAddSingleton<IBus>(p =>
+            services.AddMassTransit(x =>
             {
-                var bus = p.GetRequiredService<IBusControl>();
-                var loggerFactory = p.GetService<ILoggerFactory>();
+                x.AddBus(provider =>
+                {
+                    ConfigureLogging(provider);
 
-                if (loggerFactory != null && Logger.Current.GetType() == typeof(TraceLogger))
-                    ExtensionsLoggingIntegration.ExtensionsLogger.Use(loggerFactory);
-
-                return bus;
+                    return createBus(provider);
+                });
             });
 
-            services.TryAddSingleton<IPublishEndpoint>(p => p.GetRequiredService<IBusControl>());
-            services.TryAddSingleton<ISendEndpointProvider>(p => p.GetRequiredService<IBusControl>());
-
-            services.AddSingleton<IHostedService, MassTransitHostedService>();
+            services.AddSimplifiedHostedService(configureHealthChecks);
 
             return services;
         }
@@ -59,16 +43,28 @@ namespace MassTransit.AspNetCoreIntegration
         /// <param name="services">Service collection</param>
         /// <param name="createBus">Bus factory that loads consumers and sagas from IServiceProvider</param>
         /// <param name="configure">Use MassTransit DI extensions for IServiceCollection to register consumers and sagas</param>
+        /// <param name="configureHealthChecks">Optional, allows you to specify custom health check names</param>
         /// <returns></returns>
         /// <exception cref="ArgumentNullException"></exception>
         public static IServiceCollection AddMassTransit(this IServiceCollection services, Func<IServiceProvider, IBusControl> createBus,
-            Action<IServiceCollectionConfigurator> configure)
+            Action<IServiceCollectionConfigurator> configure, Action<HealthCheckOptions> configureHealthChecks = null)
         {
             if (configure == null)
                 throw new ArgumentNullException(nameof(configure));
 
-            services.AddMassTransit(configure);
-            services.AddMassTransit(createBus);
+            services.AddMassTransit(x =>
+            {
+                configure(x);
+
+                x.AddBus(provider =>
+                {
+                    ConfigureLogging(provider);
+
+                    return createBus(provider);
+                });
+            });
+
+            services.AddSimplifiedHostedService(configureHealthChecks);
 
             return services;
         }
@@ -78,19 +74,55 @@ namespace MassTransit.AspNetCoreIntegration
         /// </summary>
         /// <param name="services">Service collection</param>
         /// <param name="bus">The bus instance</param>
-        /// <param name="loggerFactory">ASP.NET Core logger factory instance</param>
+        /// <param name="loggerFactory">Optional: ASP.NET Core logger factory instance</param>
+        /// <param name="configureHealthChecks">Optional, allows you to specify custom health check names</param>
         /// <returns></returns>
-        public static IServiceCollection AddMassTransit(this IServiceCollection services, IBusControl bus, ILoggerFactory loggerFactory = null)
+        public static IServiceCollection AddMassTransit(this IServiceCollection services, IBusControl bus, ILoggerFactory loggerFactory = null,
+            Action<HealthCheckOptions> configureHealthChecks = null)
         {
-            if (loggerFactory != null && Logger.Current.GetType() == typeof(TraceLogger))
-                ExtensionsLoggingIntegration.ExtensionsLogger.Use(loggerFactory);
+            services.AddMassTransit(x =>
+            {
+                x.AddBus(provider =>
+                {
+                    ConfigureLogging(provider, loggerFactory);
 
-            services.TryAddSingleton(bus);
-            services.TryAddSingleton<IBus>(bus);
-            services.TryAddSingleton<IPublishEndpoint>(bus);
-            services.TryAddSingleton<ISendEndpointProvider>(bus);
+                    return bus;
+                });
+            });
+
+            services.AddSimplifiedHostedService(configureHealthChecks);
 
             return services;
+        }
+
+        static void ConfigureLogging(IServiceProvider provider, ILoggerFactory loggerFactory = null)
+        {
+            if (loggerFactory == null)
+                loggerFactory = provider.GetService<ILoggerFactory>();
+            var diagnosticSource = provider.GetService<DiagnosticSource>();
+
+            if (loggerFactory != null)
+                LogContext.ConfigureCurrentLogContext(loggerFactory, diagnosticSource);
+        }
+
+        static void AddSimplifiedHostedService(this IServiceCollection services, Action<HealthCheckOptions> configureHealthChecks)
+        {
+            var busCheck = new SimplifiedBusHealthCheck();
+            var receiveEndpointCheck = new ReceiveEndpointHealthCheck();
+
+            var healthCheckOptions = HealthCheckOptions.Default;
+            configureHealthChecks?.Invoke(healthCheckOptions);
+
+            services.AddHealthChecks()
+                .AddCheck(healthCheckOptions.BusHealthCheckName, busCheck, healthCheckOptions.FailureStatus, healthCheckOptions.Tags)
+                .AddCheck(healthCheckOptions.ReceiveEndpointHealthCheckName, receiveEndpointCheck, healthCheckOptions.FailureStatus, healthCheckOptions.Tags);
+
+            services.AddSingleton<IHostedService>(p =>
+            {
+                var bus = p.GetRequiredService<IBusControl>();
+
+                return new MassTransitHostedService(bus, busCheck, receiveEndpointCheck);
+            });
         }
     }
 }

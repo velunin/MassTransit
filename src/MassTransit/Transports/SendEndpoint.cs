@@ -1,24 +1,12 @@
-﻿// Copyright 2007-2016 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.Transports
+﻿namespace MassTransit.Transports
 {
     using System;
     using System.Threading;
     using System.Threading.Tasks;
     using Context.Converters;
     using GreenPipes;
+    using Initializers;
     using Pipeline;
-    using Util;
 
 
     public class SendEndpoint :
@@ -120,9 +108,7 @@ namespace MassTransit.Transports
             if (values == null)
                 throw new ArgumentNullException(nameof(values));
 
-            var message = TypeMetadataCache<T>.InitializeFromObject(values);
-
-            return Send(message, cancellationToken);
+            return MessageInitializerCache<T>.Send(this, values, cancellationToken);
         }
 
         public Task Send<T>(T message, IPipe<SendContext> pipe, CancellationToken cancellationToken)
@@ -172,9 +158,7 @@ namespace MassTransit.Transports
             if (values == null)
                 throw new ArgumentNullException(nameof(values));
 
-            var message = TypeMetadataCache<T>.InitializeFromObject(values);
-
-            return Send(message, pipe, cancellationToken);
+            return MessageInitializerCache<T>.Send(this, values, pipe, cancellationToken);
         }
 
         public Task Send<T>(object values, IPipe<SendContext> pipe, CancellationToken cancellationToken)
@@ -186,9 +170,7 @@ namespace MassTransit.Transports
             if (pipe == null)
                 throw new ArgumentNullException(nameof(pipe));
 
-            var message = TypeMetadataCache<T>.InitializeFromObject(values);
-
-            return Send(message, pipe, cancellationToken);
+            return MessageInitializerCache<T>.Send(this, values, pipe, cancellationToken);
         }
 
 
@@ -198,7 +180,6 @@ namespace MassTransit.Transports
         {
             readonly SendEndpoint _endpoint;
             readonly IPipe<SendContext<T>> _pipe;
-            readonly IPipe<SendContext> _sendPipe;
 
             public EndpointSendContextPipe(SendEndpoint endpoint)
             {
@@ -211,16 +192,9 @@ namespace MassTransit.Transports
                 _pipe = pipe;
             }
 
-            public EndpointSendContextPipe(SendEndpoint endpoint, IPipe<SendContext> pipe)
-            {
-                _endpoint = endpoint;
-                _sendPipe = pipe;
-            }
-
             void IProbeSite.Probe(ProbeContext context)
             {
                 _pipe?.Probe(context);
-                _sendPipe?.Probe(context);
             }
 
             public async Task Send(SendContext<T> context)
@@ -231,14 +205,14 @@ namespace MassTransit.Transports
                 if (context.SourceAddress == null)
                     context.SourceAddress = _endpoint.SourceAddress;
 
+                if (_pipe is ISendContextPipe sendContextPipe)
+                    await sendContextPipe.Send(context).ConfigureAwait(false);
+
                 if (_endpoint._sendPipe != null)
                     await _endpoint._sendPipe.Send(context).ConfigureAwait(false);
 
                 if (_pipe.IsNotEmpty())
                     await _pipe.Send(context).ConfigureAwait(false);
-
-                if (_sendPipe.IsNotEmpty())
-                    await _sendPipe.Send(context).ConfigureAwait(false);
 
                 if (!context.ConversationId.HasValue)
                     context.ConversationId = NewId.NextGuid();

@@ -52,10 +52,9 @@ namespace MassTransit.AmazonSqsTransport.Contexts
 
         public bool TryGetHeader(string key, out object value)
         {
-            var found = _attributes.ContainsKey(key);
-            if (found)
+            if (_attributes.TryGetValue(key, out var val))
             {
-                value = _attributes[key].StringValue;
+                value = val.StringValue;
                 return true;
             }
 
@@ -65,7 +64,11 @@ namespace MassTransit.AmazonSqsTransport.Contexts
 
         MessageAttributeValue ToValue(string value)
         {
-            return new MessageAttributeValue {StringValue = value, DataType = "String"};
+            return new MessageAttributeValue
+            {
+                StringValue = value,
+                DataType = "String"
+            };
         }
 
         public IEnumerable<KeyValuePair<string, object>> GetAll()
@@ -86,7 +89,8 @@ namespace MassTransit.AmazonSqsTransport.Contexts
             return defaultValue;
         }
 
-        T? Headers.Get<T>(string key, T? defaultValue)
+        public T? Get<T>(string key, T? defaultValue)
+            where T : struct
         {
             if (TryGetHeader(key, out var value))
                 return ObjectTypeDeserializer.Deserialize(value, defaultValue);

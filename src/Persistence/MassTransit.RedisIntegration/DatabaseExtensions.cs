@@ -16,6 +16,7 @@ namespace MassTransit.RedisIntegration
     using System.Threading;
     using System.Threading.Tasks;
     using GreenPipes;
+    using Metadata;
     using StackExchange.Redis;
     using Util;
 
@@ -23,17 +24,17 @@ namespace MassTransit.RedisIntegration
     public static class DatabaseExtensions
     {
         const string SagaLockSuffix = "_lock";
-
+        static string _keyPrefix;
         static readonly Random _random = new Random();
-
+        
         public static ITypedDatabase<T> As<T>(this IDatabase db)
             where T : class
         {
             return new TypedDatabase<T>(db);
         }
 
-        internal static Task<IAsyncDisposable> AcquireLockAsync(this IDatabase db, Guid sagaId, TimeSpan? expiry, TimeSpan? retryTimeout) => 
-            DataCacheLock.AcquireAsync(db, sagaId, expiry, retryTimeout);
+        internal static Task<IAsyncDisposable> AcquireLockAsync(this IDatabase db, Guid sagaId, TimeSpan? expiry, TimeSpan? retryTimeout) =>
+            DataCacheLock.AcquireAsync(db, GetKeyWithPrefix(sagaId), expiry, retryTimeout);
 
         static async Task<T> RetryUntilTrueAsync<T>(Func<Task<T>> task, TimeSpan? retryTimeout)
         {
@@ -47,12 +48,14 @@ namespace MassTransit.RedisIntegration
                     return result;
 
                 var waitFor = _random.Next((int)Math.Pow(i, 2), (int)Math.Pow(i + 1, 2) + 1);
-                await Task.Delay(waitFor);
+                await Task.Delay(waitFor).ConfigureAwait(false);
             }
 
             throw new TimeoutException($"Exceeded timeout of {retryTimeout.Value}");
         }
 
+        internal static void SetKeyPrefix(string keyPrefix) => _keyPrefix = keyPrefix;
+        internal static string GetKeyWithPrefix(Guid key) => string.IsNullOrWhiteSpace(_keyPrefix) ? key.ToString() : $"{_keyPrefix}:{key}";
 
         class DataCacheLock :
             IAsyncDisposable
@@ -62,7 +65,7 @@ namespace MassTransit.RedisIntegration
             readonly RedisKey _key;
             readonly RedisValue _token;
 
-            DataCacheLock(IDatabase db, Guid sagaId, TimeSpan? expiry)
+            DataCacheLock(IDatabase db, string sagaId, TimeSpan? expiry)
             {
                 _db = db;
                 _key = $"{sagaId}{SagaLockSuffix}";
@@ -75,7 +78,7 @@ namespace MassTransit.RedisIntegration
                 return _db.LockReleaseAsync(_key, _token);
             }
 
-            public static Task<IAsyncDisposable> AcquireAsync(IDatabase db, Guid sagaId, TimeSpan? expiry, TimeSpan? retryTimeout)
+            public static Task<IAsyncDisposable> AcquireAsync(IDatabase db, string sagaId, TimeSpan? expiry, TimeSpan? retryTimeout)
             {
                 var dataCacheLock = new DataCacheLock(db, sagaId, expiry);
 

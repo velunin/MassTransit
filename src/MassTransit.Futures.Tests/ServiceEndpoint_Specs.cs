@@ -1,19 +1,6 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the
-// License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.Tests
+﻿namespace MassTransit.Tests
 {
     using System;
-    using System.Runtime.CompilerServices;
     using System.Threading;
     using System.Threading.Tasks;
     using Context;
@@ -21,9 +8,7 @@ namespace MassTransit.Tests
     using Contracts;
     using GreenPipes;
     using GreenPipes.Caching;
-    using GreenPipes.Payloads;
-    using log4net.Filter;
-    using Logging;
+    using Initializers;
     using NUnit.Framework;
     using Subjects;
     using TestFramework;
@@ -41,10 +26,7 @@ namespace MassTransit.Tests
 
             var clientId = NewId.NextGuid();
 
-            await Bus.Publish<Link<DeployPayload>>(new
-            {
-                ClientId = clientId
-            }, context => context.ResponseAddress = Bus.Address);
+            await Bus.Publish<Link<DeployPayload>>(new {ClientId = clientId}, context => context.ResponseAddress = Bus.Address);
 
             var up = await upHandler;
 
@@ -53,10 +35,11 @@ namespace MassTransit.Tests
             var acceptHandler = SubscribeHandler<Accept<DeployPayload>>();
 
             await serviceEndpoint.Send<Ask<DeployPayload>>(new
-            {
-                ClientId = clientId,
-                up.Message.ServiceAddress
-            }, context => context.ResponseAddress = Bus.Address);
+                {
+                    ClientId = clientId,
+                    up.Message.ServiceAddress
+                },
+                context => context.ResponseAddress = Bus.Address);
 
             var accept = await acceptHandler;
 
@@ -77,7 +60,7 @@ namespace MassTransit.Tests
             var endpointId = NewId.NextGuid();
             DateTime started = DateTime.UtcNow;
 
-            configurator.ReceiveEndpoint(Host.Topology.CreateTemporaryQueueName("endpoint-"), e =>
+            configurator.ReceiveEndpoint(new TemporaryEndpointDefinition(), e =>
             {
                 var endpointAddress = e.InputAddress;
 
@@ -85,7 +68,7 @@ namespace MassTransit.Tests
                 {
                     var serviceAddress = s.InputAddress;
 
-                    configurator.ReceiveEndpoint(Host.Topology.CreateTemporaryQueueName("control-"), c =>
+                    configurator.ReceiveEndpoint(new ControlEndpointDefinition(), c =>
                     {
                         var controlAddress = c.InputAddress;
 
@@ -95,7 +78,7 @@ namespace MassTransit.Tests
                             Started = started,
                             ServiceAddress = serviceAddress,
                             EndpointAddress = endpointAddress,
-                            ControlAddress = controlAddress,
+                            InstanceAddress = controlAddress,
                         };
 
                         var runtime = new EndpointRuntime(settings);
@@ -131,7 +114,7 @@ namespace MassTransit.Tests
             public DateTime Started { get; set; }
             public Uri ServiceAddress { get; set; }
             public Uri EndpointAddress { get; set; }
-            public Uri ControlAddress { get; set; }
+            public Uri InstanceAddress { get; set; }
         }
 
 
@@ -228,10 +211,7 @@ namespace MassTransit.Tests
 
             static Task<ClientInfo> CreateClientInfo(Guid clientId)
             {
-                return Task.FromResult(new ClientInfo()
-                {
-                    ClientId = clientId
-                });
+                return Task.FromResult(new ClientInfo() {ClientId = clientId});
             }
 
             public Task Linked(Guid clientId)
@@ -246,11 +226,13 @@ namespace MassTransit.Tests
 
                 entry.Add(count);
 
-                return TypeMetadataCache<Accept<T>>.InitializeFromObject(new
+                var context = await MessageInitializerCache<Accept<T>>.Initialize(new
                 {
                     Endpoint = (EndpointInfo)_settings,
                     Count = count,
-                });
+                }).ConfigureAwait(false);
+
+                return context.Message;
             }
 
             public async Task<(bool accepted, int remaining)> Accept<T>(Guid clientId)
@@ -291,8 +273,6 @@ namespace MassTransit.Tests
             IFilter<ConsumeContext<T>>
             where T : class
         {
-            readonly ILog _log = Logger.Get<RequestLimitFilter<T>>();
-
             readonly IEndpointRuntime _runtime;
 
             public RequestLimitFilter(IEndpointRuntime runtime)
@@ -378,11 +358,9 @@ namespace MassTransit.Tests
         class DeployPayloadConsumer :
             IConsumer<DeployPayload>
         {
-            readonly ILog _log = Logger.Get<DeployPayloadConsumer>();
-
             public async Task Consume(ConsumeContext<DeployPayload> context)
             {
-                _log.InfoFormat("Deploying Payload: {0}", context.Message.Target);
+                LogContext.Info?.Log("Deploying Payload: {Target}", context.Message.Target);
 
                 await context.RespondAsync<PayloadDeployed>(new { });
             }
@@ -421,50 +399,14 @@ namespace MassTransit.Tests
             _pipe?.Probe(context);
         }
 
-        public async Task Send(SendContext<T> context)
+        public Task Send(SendContext<T> context)
         {
             context.Headers.Set(MessageHeaders.ClientId, _clientContext.ClientId.ToString("N"));
             context.Headers.Set(MessageHeaders.Request.Remaining, _clientContext.Remaining.Value.ToString());
 
-            if (_pipe.IsNotEmpty())
-                await _pipe.Send(context).ConfigureAwait(false);
-        }
-    }
-
-
-    public struct RequestSendContextPipe :
-        IPipe<SendContext>
-    {
-        readonly ServiceEndpoint_Specs.RequestClientContext _clientContext;
-        readonly IPipe<SendContext> _pipe;
-
-        public RequestSendContextPipe(ServiceEndpoint_Specs.RequestClientContext clientContext)
-        {
-            _clientContext = clientContext;
-
-            _pipe = default;
-        }
-
-        public RequestSendContextPipe(ServiceEndpoint_Specs.RequestClientContext clientContext, IPipe<SendContext> pipe)
-        {
-            _clientContext = clientContext;
-            _pipe = pipe;
-        }
-
-        void IProbeSite.Probe(ProbeContext context)
-        {
-            _pipe?.Probe(context);
-        }
-
-        public async Task Send(SendContext context)
-        {
-            context.RequestId = _clientContext.RequestId;
-
-            context.Headers.Set(MessageHeaders.ClientId, _clientContext.ClientId.ToString("N"));
-            context.Headers.Set(MessageHeaders.Request.Remaining, _clientContext.Remaining.Value.ToString());
-
-            if (_pipe.IsNotEmpty())
-                await _pipe.Send(context).ConfigureAwait(false);
+            return _pipe.IsNotEmpty()
+                ? _pipe.Send(context)
+                : TaskUtil.Completed;
         }
     }
 
@@ -541,9 +483,7 @@ namespace MassTransit.Tests
             if (values == null)
                 throw new ArgumentNullException(nameof(values));
 
-            var message = TypeMetadataCache<T>.InitializeFromObject(values);
-
-            return Send(message, cancellationToken);
+            return MessageInitializerCache<T>.Send(this, values, cancellationToken);
         }
 
         public Task Send<T>(T message, IPipe<SendContext> pipe, CancellationToken cancellationToken)
@@ -593,9 +533,7 @@ namespace MassTransit.Tests
             if (values == null)
                 throw new ArgumentNullException(nameof(values));
 
-            var message = TypeMetadataCache<T>.InitializeFromObject(values);
-
-            return Send(message, pipe, cancellationToken);
+            return MessageInitializerCache<T>.Send(this, values, pipe, cancellationToken);
         }
 
         public Task Send<T>(object values, IPipe<SendContext> pipe, CancellationToken cancellationToken)
@@ -607,9 +545,7 @@ namespace MassTransit.Tests
             if (pipe == null)
                 throw new ArgumentNullException(nameof(pipe));
 
-            var message = TypeMetadataCache<T>.InitializeFromObject(values);
-
-            return Send(message, pipe, cancellationToken);
+            return MessageInitializerCache<T>.Send(this, values, pipe, cancellationToken);
         }
     }
 

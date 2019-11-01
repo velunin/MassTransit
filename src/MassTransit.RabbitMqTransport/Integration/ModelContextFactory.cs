@@ -15,24 +15,21 @@ namespace MassTransit.RabbitMqTransport.Integration
     using System;
     using System.Threading;
     using System.Threading.Tasks;
+    using Context;
     using Contexts;
     using GreenPipes;
     using GreenPipes.Agents;
-    using Logging;
     using RabbitMQ.Client;
 
 
     public class ModelContextFactory :
         IPipeContextFactory<ModelContext>
     {
-        static readonly ILog _log = Logger.Get<ModelContextFactory>();
-        readonly IConnectionCache _connectionCache;
-        readonly IRabbitMqHost _host;
+        readonly IConnectionContextSupervisor _connectionContextSupervisor;
 
-        public ModelContextFactory(IConnectionCache connectionCache, IRabbitMqHost host)
+        public ModelContextFactory(IConnectionContextSupervisor connectionContextSupervisor)
         {
-            _connectionCache = connectionCache;
-            _host = host;
+            _connectionContextSupervisor = connectionContextSupervisor;
         }
 
         IPipeContextAgent<ModelContext> IPipeContextFactory<ModelContext>.CreateContext(ISupervisor supervisor)
@@ -74,32 +71,9 @@ namespace MassTransit.RabbitMqTransport.Integration
 
         async Task<ModelContext> CreateModel(IAsyncPipeContextAgent<ModelContext> asyncContext, CancellationToken cancellationToken)
         {
-            IPipe<ConnectionContext> connectionPipe = Pipe.ExecuteAsync<ConnectionContext>(async connectionContext =>
-            {
-                if (_log.IsDebugEnabled)
-                    _log.DebugFormat("Creating model: {0}", connectionContext.Description);
+            var createModelPipe = new CreateModelPipe(asyncContext, cancellationToken);
 
-                try
-                {
-                    var model = await connectionContext.CreateModel().ConfigureAwait(false);
-
-                    var modelContext = new RabbitMqModelContext(connectionContext, model, _host, cancellationToken);
-
-                    await asyncContext.Created(modelContext).ConfigureAwait(false);
-
-                    await asyncContext.Completed.ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    await asyncContext.CreateCanceled().ConfigureAwait(false);
-                }
-                catch (Exception exception)
-                {
-                    await asyncContext.CreateFaulted(exception).ConfigureAwait(false);
-                }
-            });
-
-            var connectionTask = _connectionCache.Send(connectionPipe, cancellationToken);
+            var connectionTask = _connectionContextSupervisor.Send(createModelPipe, cancellationToken);
 
             await Task.WhenAny(connectionTask, asyncContext.Context).ConfigureAwait(false);
             if (connectionTask.IsFaulted)
@@ -108,6 +82,47 @@ namespace MassTransit.RabbitMqTransport.Integration
                 await asyncContext.CreateCanceled().ConfigureAwait(false);
 
             return await asyncContext.Context.ConfigureAwait(false);
+        }
+
+
+        class CreateModelPipe :
+            IPipe<ConnectionContext>
+        {
+            readonly IAsyncPipeContextAgent<ModelContext> _asyncContext;
+            readonly CancellationToken _cancellationToken;
+
+            public CreateModelPipe(IAsyncPipeContextAgent<ModelContext> asyncContext, CancellationToken cancellationToken)
+            {
+                _asyncContext = asyncContext;
+                _cancellationToken = cancellationToken;
+            }
+
+            public async Task Send(ConnectionContext context)
+            {
+                try
+                {
+                    var modelContext = await context.CreateModelContext(_cancellationToken).ConfigureAwait(false);
+
+                    LogContext.Debug?.Log("Created model: {ChannelNumber} {Host}", modelContext.Model.ChannelNumber, context.Description);
+
+                    await _asyncContext.Created(modelContext).ConfigureAwait(false);
+
+                    await _asyncContext.Completed.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    await _asyncContext.CreateCanceled().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    await _asyncContext.CreateFaulted(exception).ConfigureAwait(false);
+                }
+            }
+
+            public void Probe(ProbeContext context)
+            {
+                context.CreateFilterScope("createModel");
+            }
         }
     }
 }

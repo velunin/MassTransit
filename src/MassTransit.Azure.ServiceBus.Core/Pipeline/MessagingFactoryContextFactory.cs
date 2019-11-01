@@ -1,41 +1,29 @@
-// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the
-// License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.Azure.ServiceBus.Core.Pipeline
 {
     using System;
     using System.Threading;
     using System.Threading.Tasks;
+    using Configuration;
+    using Context;
     using Contexts;
     using GreenPipes;
     using GreenPipes.Agents;
-    using Logging;
     using Microsoft.Azure.ServiceBus;
 
 
     public class MessagingFactoryContextFactory :
         IPipeContextFactory<MessagingFactoryContext>
     {
-        static readonly ILog _log = Logger.Get<MessagingFactoryContextFactory>();
         readonly MessagingFactorySettings _messagingFactorySettings;
         readonly RetryPolicy _retryPolicy;
         readonly Uri _serviceUri;
 
-        public MessagingFactoryContextFactory(Uri serviceUri, MessagingFactorySettings messagingFactorySettings, RetryPolicy retryPolicy)
+        public MessagingFactoryContextFactory(IServiceBusHostConfiguration configuration)
         {
-            _serviceUri = new UriBuilder(serviceUri) {Path = ""}.Uri;
+            _serviceUri = new UriBuilder(configuration.HostAddress) {Path = ""}.Uri;
 
-            _messagingFactorySettings = messagingFactorySettings;
-            _retryPolicy = retryPolicy;
+            _messagingFactorySettings = CreateMessagingFactorySettings(configuration.Settings);
+            _retryPolicy = CreateRetryPolicy(configuration.Settings);
         }
 
         IPipeContextAgent<MessagingFactoryContext> IPipeContextFactory<MessagingFactoryContext>.CreateContext(ISupervisor supervisor)
@@ -54,6 +42,23 @@ namespace MassTransit.Azure.ServiceBus.Core.Pipeline
             return supervisor.AddActiveContext(context, CreateSharedConnection(context.Context, cancellationToken));
         }
 
+        static MessagingFactorySettings CreateMessagingFactorySettings(ServiceBusHostSettings settings)
+        {
+            var mfs = new MessagingFactorySettings
+            {
+                TokenProvider = settings.TokenProvider,
+                OperationTimeout = settings.OperationTimeout,
+                TransportType = settings.TransportType
+            };
+
+            return mfs;
+        }
+
+        static RetryPolicy CreateRetryPolicy(ServiceBusHostSettings settings)
+        {
+            return new RetryExponential(settings.RetryMinBackoff, settings.RetryMaxBackoff, settings.RetryLimit);
+        }
+
         async Task<MessagingFactoryContext> CreateSharedConnection(Task<MessagingFactoryContext> context, CancellationToken cancellationToken)
         {
             var connectionContext = await context.ConfigureAwait(false);
@@ -70,15 +75,11 @@ namespace MassTransit.Azure.ServiceBus.Core.Pipeline
                 if (supervisor.Stopping.IsCancellationRequested)
                     throw new OperationCanceledException($"The connection is stopping and cannot be used: {_serviceUri}");
 
-                if (_log.IsDebugEnabled)
-                    _log.DebugFormat("Connecting: {0}", _serviceUri);
-
                 var messagingFactory = await MessagingFactory.CreateAsync(_serviceUri, _messagingFactorySettings).ConfigureAwait(false);
 
                 messagingFactory.RetryPolicy = _retryPolicy;
 
-                if (_log.IsDebugEnabled)
-                    _log.DebugFormat("Connected: {0}", _serviceUri);
+                LogContext.Debug?.Log("Connected: {Host}", _serviceUri);
 
                 var messagingFactoryContext = new ServiceBusMessagingFactoryContext(messagingFactory, supervisor.Stopped);
 
@@ -86,8 +87,7 @@ namespace MassTransit.Azure.ServiceBus.Core.Pipeline
             }
             catch (Exception ex)
             {
-                if (_log.IsDebugEnabled)
-                    _log.Debug($"MessagingFactory Create Failed: {_serviceUri}", ex);
+                LogContext.Error?.Log(ex, "Connect failed: {Host}", _serviceUri);
 
                 throw;
             }

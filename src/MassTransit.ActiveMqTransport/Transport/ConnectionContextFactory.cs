@@ -1,42 +1,27 @@
-﻿// Copyright 2007-2018 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.ActiveMqTransport.Transport
+﻿namespace MassTransit.ActiveMqTransport.Transport
 {
     using System;
     using System.Threading;
     using System.Threading.Tasks;
     using Apache.NMS;
+    using Configuration;
+    using Context;
     using Contexts;
     using GreenPipes;
     using GreenPipes.Agents;
-    using Logging;
     using Topology;
 
 
     public class ConnectionContextFactory :
         IPipeContextFactory<ConnectionContext>
     {
-        static readonly ILog _log = Logger.Get<ConnectionContextFactory>();
-        readonly string _description;
-        readonly ActiveMqHostSettings _settings;
-        readonly IActiveMqHostTopology _topology;
+        readonly IActiveMqHostConfiguration _configuration;
+        readonly IActiveMqHostTopology _hostTopology;
 
-        public ConnectionContextFactory(ActiveMqHostSettings settings, IActiveMqHostTopology topology)
+        public ConnectionContextFactory(IActiveMqHostConfiguration configuration, IActiveMqHostTopology hostTopology)
         {
-            _settings = settings;
-            _topology = topology;
-
-            _description = settings.ToString();
+            _configuration = configuration;
+            _hostTopology = hostTopology;
         }
 
         IPipeContextAgent<ConnectionContext> IPipeContextFactory<ConnectionContext>.CreateContext(ISupervisor supervisor)
@@ -44,8 +29,7 @@ namespace MassTransit.ActiveMqTransport.Transport
             IAsyncPipeContextAgent<ConnectionContext> asyncContext = supervisor.AddAsyncContext<ConnectionContext>();
 
             var context = Task.Factory.StartNew(() => CreateConnection(asyncContext, supervisor), supervisor.Stopping, TaskCreationOptions.None,
-                    TaskScheduler.Default)
-                .Unwrap();
+                TaskScheduler.Default).Unwrap();
 
             void HandleConnectionException(Exception exception)
             {
@@ -83,20 +67,18 @@ namespace MassTransit.ActiveMqTransport.Transport
             try
             {
                 if (supervisor.Stopping.IsCancellationRequested)
-                    throw new OperationCanceledException($"The connection is stopping and cannot be used: {_description}");
+                    throw new OperationCanceledException($"The connection is stopping and cannot be used: {_configuration.Description}");
 
-                if (_log.IsDebugEnabled)
-                    _log.DebugFormat("Connecting: {0}", _description);
+                LogContext.Debug?.Log("Connecting: {Host}", _configuration.Description);
 
-                connection = _settings.CreateConnection();
+                connection = _configuration.Settings.CreateConnection();
 
                 connection.Start();
 
-                if (_log.IsDebugEnabled)
-                    _log.DebugFormat("Connected: {0} (client-id: {1}, version: {2})", _description, connection.ClientId, connection.MetaData.NMSVersion);
+                LogContext.Debug?.Log("Connected: {Host} (client-id: {ClientId}, version: {Version})", _configuration.Description, connection.ClientId,
+                    connection.MetaData.NMSVersion);
 
-                var connectionContext = new ActiveMqConnectionContext(connection, _settings, _topology, _description, supervisor.Stopped);
-                connectionContext.GetOrAddPayload(() => _settings);
+                var connectionContext = new ActiveMqConnectionContext(connection, _configuration, _hostTopology, supervisor.Stopped);
 
                 await asyncContext.Created(connectionContext).ConfigureAwait(false);
 
@@ -109,14 +91,13 @@ namespace MassTransit.ActiveMqTransport.Transport
             }
             catch (NMSConnectionException ex)
             {
-                if (_log.IsDebugEnabled)
-                    _log.Debug("ActiveMQ Connect failed:", ex);
+                LogContext.Error?.Log(ex, "ActiveMQ connection failed");
 
                 await asyncContext.CreateFaulted(ex).ConfigureAwait(false);
 
                 connection?.Dispose();
 
-                throw new ActiveMqConnectException("Connect failed: " + _description, ex);
+                throw new ActiveMqConnectException("Connect failed: " + _configuration.Description, ex);
             }
         }
     }

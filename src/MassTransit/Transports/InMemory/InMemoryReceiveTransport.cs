@@ -1,15 +1,3 @@
-// Copyright 2007-2017 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
 namespace MassTransit.Transports.InMemory
 {
     using System;
@@ -21,8 +9,8 @@ namespace MassTransit.Transports.InMemory
     using Fabric;
     using GreenPipes;
     using GreenPipes.Agents;
+    using Logging;
     using Metrics;
-    using Util;
 
 
     /// <summary>
@@ -36,14 +24,14 @@ namespace MassTransit.Transports.InMemory
     {
         readonly Uri _inputAddress;
         readonly IInMemoryQueue _queue;
-        readonly ReceiveEndpointContext _receiveEndpointContext;
+        readonly ReceiveEndpointContext _context;
         readonly IDeliveryTracker _tracker;
 
-        public InMemoryReceiveTransport(Uri inputAddress, IInMemoryQueue queue, ReceiveEndpointContext receiveEndpointContext)
+        public InMemoryReceiveTransport(Uri inputAddress, IInMemoryQueue queue, ReceiveEndpointContext context)
         {
             _inputAddress = inputAddress;
             _queue = queue;
-            _receiveEndpointContext = receiveEndpointContext;
+            _context = context;
 
             _tracker = new DeliveryTracker(HandleDeliveryComplete);
         }
@@ -54,53 +42,65 @@ namespace MassTransit.Transports.InMemory
             if (IsStopped)
                 return;
 
-            var context = new InMemoryReceiveContext(_inputAddress, message, _receiveEndpointContext);
+            LogContext.Current = _context.LogContext;
 
-            using (_tracker.BeginDelivery())
+            var context = new InMemoryReceiveContext(_inputAddress, message, _context);
+            var delivery = _tracker.BeginDelivery();
+
+            var activity = LogContext.IfEnabled(OperationName.Transport.Receive)?.StartActivity();
+            activity.AddReceiveContextHeaders(context);
+
+            try
             {
-                try
-                {
-                    await _receiveEndpointContext.ReceiveObservers.PreReceive(context).ConfigureAwait(false);
+                if (_context.ReceiveObservers.Count > 0)
+                    await _context.ReceiveObservers.PreReceive(context).ConfigureAwait(false);
 
-                    await _receiveEndpointContext.ReceivePipe.Send(context).ConfigureAwait(false);
+                await _context.ReceivePipe.Send(context).ConfigureAwait(false);
 
-                    await context.ReceiveCompleted.ConfigureAwait(false);
+                await context.ReceiveCompleted.ConfigureAwait(false);
 
-                    await _receiveEndpointContext.ReceiveObservers.PostReceive(context).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    await _receiveEndpointContext.ReceiveObservers.ReceiveFault(context, ex).ConfigureAwait(false);
+                if (_context.ReceiveObservers.Count > 0)
+                    await _context.ReceiveObservers.PostReceive(context).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                if (_context.ReceiveObservers.Count > 0)
+                    await _context.ReceiveObservers.ReceiveFault(context, ex).ConfigureAwait(false);
 
-                    message.DeliveryCount++;
-                }
-                finally
-                {
-                    context.Dispose();
-                }
+                message.DeliveryCount++;
+            }
+            finally
+            {
+                activity?.Stop();
+
+                delivery.Dispose();
+
+                context.Dispose();
             }
         }
 
         public void Probe(ProbeContext context)
         {
             var scope = context.CreateScope("inMemoryReceiveTransport");
-            scope.Set(new
-            {
-                Address = _inputAddress
-            });
+            scope.Set(new {Address = _inputAddress});
         }
 
         ReceiveTransportHandle IReceiveTransport.Start()
         {
             try
             {
-                _queue.ConnectConsumer(this);
+                var consumerHandle = _queue.ConnectConsumer(this);
 
-                TaskUtil.Await(() => _receiveEndpointContext.TransportObservers.Ready(new ReceiveTransportReadyEvent(_inputAddress)));
+                void NotifyReady()
+                {
+                    _context.TransportObservers.Ready(new ReceiveTransportReadyEvent(_inputAddress));
 
-                SetReady();
+                    SetReady();
+                }
 
-                return new Handle(this);
+                Task.Factory.StartNew(NotifyReady, CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+
+                return new Handle(this, consumerHandle);
             }
             catch (Exception exception)
             {
@@ -111,22 +111,22 @@ namespace MassTransit.Transports.InMemory
 
         ConnectHandle IReceiveObserverConnector.ConnectReceiveObserver(IReceiveObserver observer)
         {
-            return _receiveEndpointContext.ConnectReceiveObserver(observer);
+            return _context.ConnectReceiveObserver(observer);
         }
 
         ConnectHandle IReceiveTransportObserverConnector.ConnectReceiveTransportObserver(IReceiveTransportObserver observer)
         {
-            return _receiveEndpointContext.ConnectReceiveTransportObserver(observer);
+            return _context.ConnectReceiveTransportObserver(observer);
         }
 
         ConnectHandle IPublishObserverConnector.ConnectPublishObserver(IPublishObserver observer)
         {
-            return _receiveEndpointContext.ConnectPublishObserver(observer);
+            return _context.ConnectPublishObserver(observer);
         }
 
         ConnectHandle ISendObserverConnector.ConnectSendObserver(ISendObserver observer)
         {
-            return _receiveEndpointContext.ConnectSendObserver(observer);
+            return _context.ConnectSendObserver(observer);
         }
 
         void HandleDeliveryComplete()
@@ -138,19 +138,25 @@ namespace MassTransit.Transports.InMemory
             ReceiveTransportHandle
         {
             readonly InMemoryReceiveTransport _transport;
+            readonly ConnectHandle _consumerHandle;
 
-            public Handle(InMemoryReceiveTransport transport)
+            public Handle(InMemoryReceiveTransport transport, ConnectHandle consumerHandle)
             {
                 _transport = transport;
+                _consumerHandle = consumerHandle;
             }
 
             async Task ReceiveTransportHandle.Stop(CancellationToken cancellationToken)
             {
+                LogContext.SetCurrentIfNull(_transport._context.LogContext);
+
                 await _transport.Stop("Stop", cancellationToken).ConfigureAwait(false);
+
+                _consumerHandle.Disconnect();
 
                 var completed = new ReceiveTransportCompletedEvent(_transport._inputAddress, _transport._tracker.GetDeliveryMetrics());
 
-                await _transport._receiveEndpointContext.TransportObservers.Completed(completed).ConfigureAwait(false);
+                await _transport._context.TransportObservers.Completed(completed).ConfigureAwait(false);
             }
         }
     }

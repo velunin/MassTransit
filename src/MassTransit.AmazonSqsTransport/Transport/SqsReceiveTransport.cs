@@ -15,12 +15,13 @@ namespace MassTransit.AmazonSqsTransport.Transport
     using System;
     using System.Threading;
     using System.Threading.Tasks;
+    using Context;
     using Contexts;
     using Events;
     using Exceptions;
     using GreenPipes;
     using GreenPipes.Agents;
-    using Logging;
+    using GreenPipes.Internals.Extensions;
     using Policies;
     using Topology;
     using Transports;
@@ -30,22 +31,21 @@ namespace MassTransit.AmazonSqsTransport.Transport
         Supervisor,
         IReceiveTransport
     {
-        static readonly ILog _log = Logger.Get<SqsReceiveTransport>();
         readonly IPipe<ConnectionContext> _connectionPipe;
         readonly IAmazonSqsHost _host;
         readonly Uri _inputAddress;
         readonly ReceiveSettings _settings;
-        readonly SqsReceiveEndpointContext _receiveEndpointContext;
+        readonly SqsReceiveEndpointContext _context;
 
         public SqsReceiveTransport(IAmazonSqsHost host, ReceiveSettings settings, IPipe<ConnectionContext> connectionPipe,
-            SqsReceiveEndpointContext receiveEndpointContext)
+            SqsReceiveEndpointContext context)
         {
             _host = host;
             _settings = settings;
-            _receiveEndpointContext = receiveEndpointContext;
+            _context = context;
             _connectionPipe = connectionPipe;
 
-            _inputAddress = receiveEndpointContext.InputAddress;
+            _inputAddress = context.InputAddress;
         }
 
         void IProbeSite.Probe(ProbeContext context)
@@ -54,7 +54,7 @@ namespace MassTransit.AmazonSqsTransport.Transport
             scope.Add("type", "AmazonSQS");
             scope.Set(_settings);
             var topologyScope = scope.CreateScope("topology");
-            _receiveEndpointContext.BrokerTopology.Probe(topologyScope);
+            _context.BrokerTopology.Probe(topologyScope);
         }
 
         /// <summary>
@@ -71,22 +71,22 @@ namespace MassTransit.AmazonSqsTransport.Transport
 
         ConnectHandle IReceiveObserverConnector.ConnectReceiveObserver(IReceiveObserver observer)
         {
-            return _receiveEndpointContext.ConnectReceiveObserver(observer);
+            return _context.ConnectReceiveObserver(observer);
         }
 
         ConnectHandle IReceiveTransportObserverConnector.ConnectReceiveTransportObserver(IReceiveTransportObserver observer)
         {
-            return _receiveEndpointContext.ConnectReceiveTransportObserver(observer);
+            return _context.ConnectReceiveTransportObserver(observer);
         }
 
         ConnectHandle IPublishObserverConnector.ConnectPublishObserver(IPublishObserver observer)
         {
-            return _receiveEndpointContext.ConnectPublishObserver(observer);
+            return _context.ConnectPublishObserver(observer);
         }
 
         ConnectHandle ISendObserverConnector.ConnectSendObserver(ISendObserver observer)
         {
-            return _receiveEndpointContext.ConnectSendObserver(observer);
+            return _context.ConnectSendObserver(observer);
         }
 
         async Task Receiver()
@@ -97,9 +97,16 @@ namespace MassTransit.AmazonSqsTransport.Transport
                 {
                     await _host.ConnectionRetryPolicy.Retry(async () =>
                     {
+                        if (IsStopping)
+                            return;
+
                         try
                         {
-                            await _host.ConnectionCache.Send(_connectionPipe, Stopped).ConfigureAwait(false);
+                            await _context.OnTransportStartup(_host.ConnectionContextSupervisor, Stopping).ConfigureAwait(false);
+                            if (IsStopping)
+                                return;
+
+                            await _host.ConnectionContextSupervisor.Send(_connectionPipe, Stopped).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException)
                         {
@@ -108,7 +115,7 @@ namespace MassTransit.AmazonSqsTransport.Transport
                         {
                             throw await ConvertToAmazonSqsConnectionException(ex, "ReceiveTransport Faulted, Restarting ").ConfigureAwait(false);
                         }
-                    }, Stopping);
+                    }, Stopping).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -119,22 +126,20 @@ namespace MassTransit.AmazonSqsTransport.Transport
 
         async Task<AmazonSqsConnectException> ConvertToAmazonSqsConnectionException(Exception ex, string message)
         {
-            if (_log.IsDebugEnabled)
-                _log.Debug(message, ex);
+            LogContext.Error?.Log(ex, message);
 
-            var exception = new AmazonSqsConnectException(message + _host.ConnectionCache, ex);
+            var exception = new AmazonSqsConnectException(message + _host.ConnectionContextSupervisor, ex);
 
-            await NotifyFaulted(exception);
+            await NotifyFaulted(exception).ConfigureAwait(false);
 
             return exception;
         }
 
         Task NotifyFaulted(Exception exception)
         {
-            if (_log.IsErrorEnabled)
-                _log.ErrorFormat("AmazonSQS Connect Failed: {0}", exception.Message);
+            LogContext.Error?.Log(exception, "AmazonSQS Connect Failed: {Host}", _host.Address);
 
-            return _receiveEndpointContext.TransportObservers.Faulted(new ReceiveTransportFaultedEvent(_inputAddress, exception));
+            return _context.TransportObservers.Faulted(new ReceiveTransportFaultedEvent(_inputAddress, exception));
         }
 
 

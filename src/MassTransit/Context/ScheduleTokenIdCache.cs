@@ -36,7 +36,7 @@ namespace MassTransit.Context
 
         ScheduleTokenIdCache()
         {
-            _selector = x => default(Guid?);
+            _selector = x => default;
         }
 
         public bool TryGetTokenId(T message, out Guid tokenId)
@@ -48,17 +48,16 @@ namespace MassTransit.Context
                 return true;
             }
 
-            tokenId = default(Guid);
+            tokenId = default;
             return false;
         }
 
-        public static Guid GetTokenId(T message)
+        public static Guid GetTokenId(T message, Guid? defaultValue = default)
         {
-            Guid tokenId;
-            if (Cached.Metadata.Value.TryGetTokenId(message, out tokenId))
+            if (Cached.Metadata.Value.TryGetTokenId(message, out var tokenId))
                 return tokenId;
 
-            return NewId.NextGuid();
+            return defaultValue ?? NewId.NextGuid();
         }
 
         internal static void UseTokenId(TokenIdSelector tokenIdSelector)

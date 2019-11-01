@@ -18,6 +18,8 @@ namespace MassTransit
     using Azure.ServiceBus.Core;
     using Azure.ServiceBus.Core.Scheduling;
     using GreenPipes;
+    using Initializers;
+    using Metadata;
     using Scheduling;
     using Util;
 
@@ -34,7 +36,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, DateTime scheduledTime, T message,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
             where T : class
         {
             var pipeProxy = new ServiceBusScheduleMessagePipe<T>(scheduledTime);
@@ -53,7 +55,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, DateTime scheduledTime, T message, IPipe<SendContext<T>> pipe,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
             where T : class
         {
             var pipeProxy = new ServiceBusScheduleMessagePipe<T>(scheduledTime, pipe);
@@ -72,7 +74,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, DateTime scheduledTime, T message, IPipe<SendContext> pipe,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
             where T : class
         {
             var pipeProxy = new ServiceBusScheduleMessagePipe<T>(scheduledTime, pipe);
@@ -89,7 +91,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage> SchedulePublish(this ConsumeContext context, DateTime scheduledTime, object message,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
         {
             if (message == null)
                 throw new ArgumentNullException(nameof(message));
@@ -112,10 +114,11 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage> SchedulePublish(this ConsumeContext context, DateTime scheduledTime, object message, Type messageType,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
         {
             if (message == null)
                 throw new ArgumentNullException(nameof(message));
+
             if (messageType == null)
                 throw new ArgumentNullException(nameof(messageType));
 
@@ -135,7 +138,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage> SchedulePublish(this ConsumeContext context, DateTime scheduledTime, object message, IPipe<SendContext> pipe,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
         {
             if (message == null)
                 throw new ArgumentNullException(nameof(message));
@@ -159,10 +162,11 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage> SchedulePublish(this ConsumeContext context, DateTime scheduledTime, object message, Type messageType,
-            IPipe<SendContext> pipe, CancellationToken cancellationToken = default(CancellationToken))
+            IPipe<SendContext> pipe, CancellationToken cancellationToken = default)
         {
             if (message == null)
                 throw new ArgumentNullException(nameof(message));
+
             if (messageType == null)
                 throw new ArgumentNullException(nameof(messageType));
 
@@ -182,7 +186,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, DateTime scheduledTime, object values,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
             where T : class
         {
             if (values == null)
@@ -190,9 +194,7 @@ namespace MassTransit
 
             var pipeProxy = new ServiceBusScheduleMessagePipe<T>(scheduledTime);
 
-            var message = TypeMetadataCache<T>.InitializeFromObject(values);
-
-            return Schedule(context, scheduledTime, message, pipeProxy, cancellationToken);
+            return Schedule(context, scheduledTime, values, pipeProxy, cancellationToken);
         }
 
         /// <summary>
@@ -207,7 +209,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, DateTime scheduledTime, object values,
-            IPipe<SendContext<T>> pipe, CancellationToken cancellationToken = default(CancellationToken))
+            IPipe<SendContext<T>> pipe, CancellationToken cancellationToken = default)
             where T : class
         {
             if (values == null)
@@ -215,9 +217,7 @@ namespace MassTransit
 
             var pipeProxy = new ServiceBusScheduleMessagePipe<T>(scheduledTime, pipe);
 
-            var message = TypeMetadataCache<T>.InitializeFromObject(values);
-
-            return Schedule(context, scheduledTime, message, pipeProxy, cancellationToken);
+            return Schedule(context, scheduledTime, values, pipeProxy, cancellationToken);
         }
 
         /// <summary>
@@ -232,7 +232,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, DateTime scheduledTime, object values, IPipe<SendContext> pipe,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
             where T : class
         {
             if (values == null)
@@ -240,9 +240,7 @@ namespace MassTransit
 
             var pipeProxy = new ServiceBusScheduleMessagePipe<T>(scheduledTime, pipe);
 
-            var message = TypeMetadataCache<T>.InitializeFromObject(values);
-
-            return Schedule(context, scheduledTime, message, pipeProxy, cancellationToken);
+            return Schedule(context, scheduledTime, values, pipeProxy, cancellationToken);
         }
 
         /// <summary>
@@ -255,7 +253,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, TimeSpan delay, T message,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
             where T : class
         {
             var scheduledTime = DateTime.UtcNow + delay;
@@ -274,7 +272,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, TimeSpan delay, T message, IPipe<SendContext<T>> pipe,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
             where T : class
         {
             var scheduledTime = DateTime.UtcNow + delay;
@@ -293,7 +291,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, TimeSpan delay, T message,
-            IPipe<SendContext> pipe, CancellationToken cancellationToken = default(CancellationToken))
+            IPipe<SendContext> pipe, CancellationToken cancellationToken = default)
             where T : class
         {
             var scheduledTime = DateTime.UtcNow + delay;
@@ -310,7 +308,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage> SchedulePublish(this ConsumeContext context, TimeSpan delay, object message,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
         {
             var scheduledTime = DateTime.UtcNow + delay;
 
@@ -328,7 +326,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage> SchedulePublish(this ConsumeContext context, TimeSpan delay, object message, Type messageType,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
         {
             var scheduledTime = DateTime.UtcNow + delay;
 
@@ -346,7 +344,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage> SchedulePublish(this ConsumeContext context, TimeSpan delay, object message,
-            IPipe<SendContext> pipe, CancellationToken cancellationToken = default(CancellationToken))
+            IPipe<SendContext> pipe, CancellationToken cancellationToken = default)
         {
             var scheduledTime = DateTime.UtcNow + delay;
 
@@ -365,7 +363,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage> SchedulePublish(this ConsumeContext context, TimeSpan delay, object message, Type messageType,
-            IPipe<SendContext> pipe, CancellationToken cancellationToken = default(CancellationToken))
+            IPipe<SendContext> pipe, CancellationToken cancellationToken = default)
         {
             var scheduledTime = DateTime.UtcNow + delay;
 
@@ -383,7 +381,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, TimeSpan delay, object values,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
             where T : class
         {
             var scheduledTime = DateTime.UtcNow + delay;
@@ -403,7 +401,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, TimeSpan delay, object values,
-            IPipe<SendContext<T>> pipe, CancellationToken cancellationToken = default(CancellationToken))
+            IPipe<SendContext<T>> pipe, CancellationToken cancellationToken = default)
             where T : class
         {
             var scheduledTime = DateTime.UtcNow + delay;
@@ -423,7 +421,7 @@ namespace MassTransit
         /// <param name="cancellationToken"></param>
         /// <returns>The task which is completed once the Send is acknowledged by the broker</returns>
         public static Task<ScheduledMessage<T>> SchedulePublish<T>(this ConsumeContext context, TimeSpan delay, object values,
-            IPipe<SendContext> pipe, CancellationToken cancellationToken = default(CancellationToken))
+            IPipe<SendContext> pipe, CancellationToken cancellationToken = default)
             where T : class
         {
             var scheduledTime = DateTime.UtcNow + delay;
@@ -444,7 +442,7 @@ namespace MassTransit
             throw new EndpointNotFoundException($"The publish endpoint for the message type could not be found: {TypeMetadataCache<T>.ShortName}");
         }
 
-        static async Task<ScheduledMessage<T>> Schedule<T>(ConsumeContext context, DateTime scheduledTime, T message, ServiceBusScheduleMessagePipe<T> pipe,
+        static async Task<ScheduledMessage<T>> Schedule<T>(ConsumeContext context, DateTime scheduledTime, T message, ScheduleMessageContextPipe<T> pipe,
             CancellationToken cancellationToken)
             where T : class
         {
@@ -455,12 +453,24 @@ namespace MassTransit
             return new ScheduledMessageHandle<T>(pipe.ScheduledMessageId ?? NewId.NextGuid(), scheduledTime, destinationAddress, message);
         }
 
-        static async Task<ScheduledMessage> Schedule(ConsumeContext context, DateTime scheduledTime, object message, Type messageType,
-            ServiceBusScheduleMessagePipe pipe, CancellationToken cancellationToken)
+        static async Task<ScheduledMessage<T>> Schedule<T>(ConsumeContext context, DateTime scheduledTime, object values, ScheduleMessageContextPipe<T> pipe,
+            CancellationToken cancellationToken)
+            where T : class
         {
+            var message = await MessageInitializerCache<T>.InitializeMessage(values, cancellationToken).ConfigureAwait(false);
+
             await context.Publish(message, pipe, cancellationToken).ConfigureAwait(false);
 
-            // TODO this is fucked for now
+            var destinationAddress = GetDestinationAddress(context, message);
+
+            return new ScheduledMessageHandle<T>(pipe.ScheduledMessageId ?? NewId.NextGuid(), scheduledTime, destinationAddress, message);
+        }
+
+        static async Task<ScheduledMessage> Schedule(ConsumeContext context, DateTime scheduledTime, object message, Type messageType,
+            ScheduleMessageContextPipe pipe, CancellationToken cancellationToken)
+        {
+            await context.Publish(message, messageType, pipe, cancellationToken).ConfigureAwait(false);
+
             var destinationAddress = GetDestinationAddress(context, message);
 
             return new ScheduledMessageHandle(pipe.ScheduledMessageId ?? NewId.NextGuid(), scheduledTime, destinationAddress);

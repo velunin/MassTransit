@@ -13,11 +13,11 @@
 namespace MassTransit.AmazonSqsTransport.Topology.Topologies
 {
     using System;
+    using System.Globalization;
     using Configuration;
     using MassTransit.Topology;
     using MassTransit.Topology.Topologies;
     using Settings;
-    using Util;
 
 
     public class AmazonSqsSendTopology :
@@ -38,34 +38,19 @@ namespace MassTransit.AmazonSqsTransport.Topology.Topologies
             return configurator as IAmazonSqsMessageSendTopologyConfigurator<T>;
         }
 
-        public SendSettings GetSendSettings(Uri address)
+        public SendSettings GetSendSettings(AmazonSqsEndpointAddress address)
         {
-            var name = address.AbsolutePath.Substring(1);
-            string[] pathSegments = name.Split('/');
-            if (pathSegments.Length == 2)
-                name = pathSegments[1];
-
-            if (name == "*")
-                throw new ArgumentException("Cannot send to a dynamic address");
-
-            EntityNameValidator.ThrowIfInvalidEntityName(name);
-
-            var isTemporary = address.Query.GetValueFromQueryString("temporary", false);
-
-            var durable = address.Query.GetValueFromQueryString("durable", !isTemporary);
-            var autoDelete = address.Query.GetValueFromQueryString("autodelete", isTemporary);
-
-            return new QueueSendSettings(name, durable, autoDelete);
+            return new QueueSendSettings(address.Path, true, address.AutoDelete);
         }
 
         public ErrorSettings GetErrorSettings(EntitySettings settings)
         {
-            return new QueueErrorSettings(settings, settings.EntityName + "_error");
+            return new QueueErrorSettings(settings, BuildEntityName(settings.EntityName, "_error"));
         }
 
         public DeadLetterSettings GetDeadLetterSettings(EntitySettings settings)
         {
-            return new QueueDeadLetterSettings(settings, settings.EntityName + "_skipped");
+            return new QueueDeadLetterSettings(settings, BuildEntityName(settings.EntityName, "_skipped"));
         }
 
         protected override IMessageSendTopologyConfigurator CreateMessageTopology<T>(Type type)
@@ -75,6 +60,18 @@ namespace MassTransit.AmazonSqsTransport.Topology.Topologies
             OnMessageTopologyCreated(messageTopology);
 
             return messageTopology;
+        }
+
+        string BuildEntityName(string entityName, string suffix)
+        {
+            const string fifoSuffix = ".fifo";
+
+            if (!entityName.EndsWith(fifoSuffix, true, CultureInfo.InvariantCulture))
+            {
+                return entityName + suffix;
+            }
+
+            return entityName.Substring(0, entityName.Length - fifoSuffix.Length) + suffix + fifoSuffix;
         }
     }
 }

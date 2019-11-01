@@ -1,22 +1,9 @@
-﻿// Copyright 2007-2015 Chris Patterson, Dru Sellers, Travis Smith, et. al.
-//  
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-// this file except in compliance with the License. You may obtain a copy of the 
-// License at 
-// 
-//     http://www.apache.org/licenses/LICENSE-2.0 
-// 
-// Unless required by applicable law or agreed to in writing, software distributed
-// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the 
-// specific language governing permissions and limitations under the License.
-namespace MassTransit.RabbitMqTransport.Tests
+﻿namespace MassTransit.RabbitMqTransport.Tests
 {
     using System;
     using System.Runtime.Serialization;
     using System.Threading.Tasks;
     using GreenPipes;
-    using MassTransit.Pipeline;
     using NUnit.Framework;
     using Shouldly;
     using TestFramework.Messages;
@@ -25,6 +12,7 @@ namespace MassTransit.RabbitMqTransport.Tests
     namespace ObserverTests
     {
         using GreenPipes.Internals.Extensions;
+        using Util;
 
 
         [TestFixture]
@@ -82,7 +70,7 @@ namespace MassTransit.RabbitMqTransport.Tests
 
                         await observer.PreSent;
 
-                        Assert.That(async () => await sendObserver.PreSent.UntilCompletedOrTimeout(5000), Throws.TypeOf<TimeoutException>());
+                        Assert.That(async () => await sendObserver.PreSent.OrTimeout(s:5), Throws.TypeOf<TimeoutException>());
                     }
                 }
             }
@@ -114,9 +102,9 @@ namespace MassTransit.RabbitMqTransport.Tests
 
             public PublishObserver()
             {
-                _sendFaulted = new TaskCompletionSource<PublishContext>();
-                _preSend = new TaskCompletionSource<PublishContext>();
-                _postSend = new TaskCompletionSource<PublishContext>();
+                _sendFaulted = TaskUtil.GetTask<PublishContext>();
+                _preSend = TaskUtil.GetTask<PublishContext>();
+                _postSend = TaskUtil.GetTask<PublishContext>();
             }
 
             public Task<PublishContext> PreSent
@@ -157,9 +145,9 @@ namespace MassTransit.RabbitMqTransport.Tests
         class SendObserver :
             ISendObserver
         {
-            readonly TaskCompletionSource<SendContext> _postSend = new TaskCompletionSource<SendContext>();
-            readonly TaskCompletionSource<SendContext> _preSend = new TaskCompletionSource<SendContext>();
-            readonly TaskCompletionSource<SendContext> _sendFaulted = new TaskCompletionSource<SendContext>();
+            readonly TaskCompletionSource<SendContext> _postSend = TaskUtil.GetTask<SendContext>();
+            readonly TaskCompletionSource<SendContext> _preSend = TaskUtil.GetTask<SendContext>();
+            readonly TaskCompletionSource<SendContext> _sendFaulted = TaskUtil.GetTask<SendContext>();
 
             public Task<SendContext> PreSent
             {

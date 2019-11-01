@@ -15,21 +15,17 @@ namespace MassTransit.RabbitMqTransport.Topology.Topologies
     using System;
     using System.Collections.Generic;
     using System.Linq;
-    using System.Text;
     using Builders;
     using GreenPipes;
     using MassTransit.Topology;
     using MassTransit.Topology.Topologies;
-    using NewIdFormatters;
     using Specifications;
-    using Util;
 
 
     public class RabbitMqConsumeTopology :
         ConsumeTopology,
         IRabbitMqConsumeTopologyConfigurator
     {
-        static readonly INewIdFormatter _formatter = new ZBase32Formatter();
         readonly IMessageTopology _messageTopology;
         readonly IRabbitMqPublishTopology _publishTopology;
         readonly IList<IRabbitMqConsumeTopologySpecification> _specifications;
@@ -97,29 +93,6 @@ namespace MassTransit.RabbitMqTransport.Topology.Topologies
             configure?.Invoke(specification);
 
             _specifications.Add(specification);
-        }
-
-        public string CreateTemporaryQueueName(string prefix)
-        {
-            var sb = new StringBuilder(prefix);
-
-            var host = HostMetadataCache.Host;
-
-            foreach (var c in host.MachineName)
-                if (char.IsLetterOrDigit(c))
-                    sb.Append(c);
-                else if (c == '.' || c == '_' || c == '-' || c == ':')
-                    sb.Append(c);
-            sb.Append('-');
-            foreach (var c in host.ProcessName)
-                if (char.IsLetterOrDigit(c))
-                    sb.Append(c);
-                else if (c == '.' || c == '_' || c == '-' || c == ':')
-                    sb.Append(c);
-            sb.Append('-');
-            sb.Append(NewId.Next().ToString(_formatter));
-
-            return sb.ToString();
         }
 
         public override IEnumerable<ValidationResult> Validate()

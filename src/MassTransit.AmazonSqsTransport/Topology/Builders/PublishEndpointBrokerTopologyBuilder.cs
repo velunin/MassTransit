@@ -12,6 +12,8 @@
 // specific language governing permissions and limitations under the License.
 namespace MassTransit.AmazonSqsTransport.Topology.Builders
 {
+    using System.Collections.Generic;
+    using Amazon.SQS.Model;
     using Entities;
 
 
@@ -67,14 +69,14 @@ namespace MassTransit.AmazonSqsTransport.Topology.Builders
                 return this;
             }
 
-            public TopicHandle CreateTopic(string name, bool durable, bool autoDelete)
+            public TopicHandle CreateTopic(string name, bool durable, bool autoDelete, IDictionary<string, object> topicAttributes = null, IDictionary<string, object> topicSubscriptionAttributes = null, IDictionary<string, string> tags = null)
             {
-                return _builder.CreateTopic(name, durable, autoDelete);
+                return _builder.CreateTopic(name, durable, autoDelete, topicAttributes, topicSubscriptionAttributes, tags);
             }
 
-            public QueueHandle CreateQueue(string name, bool durable, bool autoDelete)
+            public QueueHandle CreateQueue(string name, bool durable, bool autoDelete, IDictionary<string, object> queueAttributes = null, IDictionary<string, object> queueSubscriptionAttributes = null, IDictionary<string, string> tags = null)
             {
-                return _builder.CreateQueue(name, durable, autoDelete);
+                return _builder.CreateQueue(name, durable, autoDelete, queueAttributes, queueSubscriptionAttributes, tags);
             }
 
             public QueueSubscriptionHandle CreateQueueSubscription(TopicHandle topic, QueueHandle queue)

@@ -29,47 +29,22 @@ namespace MassTransit.Configuration
         ISpecification
     {
         readonly IBuildPipeConfigurator<ReceiveContext> _configurator;
-        readonly IBuildPipeConfigurator<ReceiveContext> _deadLetterPipeConfigurator;
-        readonly IBuildPipeConfigurator<ExceptionReceiveContext> _errorPipeConfigurator;
         bool _created;
 
         public ReceivePipeConfiguration()
         {
             _configurator = new PipeConfigurator<ReceiveContext>();
-            _deadLetterPipeConfigurator = new PipeConfigurator<ReceiveContext>();
-            _errorPipeConfigurator = new PipeConfigurator<ExceptionReceiveContext>();
+            DeadLetterConfigurator = new PipeConfigurator<ReceiveContext>();
+            ErrorConfigurator = new PipeConfigurator<ExceptionReceiveContext>();
         }
 
         public ISpecification Specification => _configurator;
 
         public IReceivePipeConfigurator Configurator => this;
 
-        public IReceivePipe CreatePipe(IConsumePipe consumePipe, IMessageDeserializer messageDeserializer)
-        {
-            if (_created)
-                throw new ConfigurationException("The ReceivePipeConfiguration can only be used once.");
+        public IBuildPipeConfigurator<ReceiveContext> DeadLetterConfigurator { get; }
 
-            _deadLetterPipeConfigurator.UseFilter(new DeadLetterTransportFilter());
-            _configurator.UseDeadLetter(_deadLetterPipeConfigurator.Build());
-
-            _errorPipeConfigurator.UseFilter(new GenerateFaultFilter());
-            _errorPipeConfigurator.UseFilter(new ErrorTransportFilter());
-
-            _configurator.UseRescue(_errorPipeConfigurator.Build(), x =>
-            {
-                x.Ignore<OperationCanceledException>();
-            });
-
-            _configurator.UseFilter(new DeserializeFilter(messageDeserializer, consumePipe));
-
-            _created = true;
-
-            return new ReceivePipe(_configurator.Build(), consumePipe);
-        }
-
-        public IPipeConfigurator<ReceiveContext> DeadLetterConfigurator => _deadLetterPipeConfigurator;
-
-        public IPipeConfigurator<ExceptionReceiveContext> ErrorConfigurator => _errorPipeConfigurator;
+        public IBuildPipeConfigurator<ExceptionReceiveContext> ErrorConfigurator { get; }
 
         public void AddPipeSpecification(IPipeSpecification<ReceiveContext> specification)
         {
@@ -79,8 +54,44 @@ namespace MassTransit.Configuration
         public IEnumerable<ValidationResult> Validate()
         {
             return _configurator.Validate()
-                .Concat(_deadLetterPipeConfigurator.Validate())
-                .Concat(_errorPipeConfigurator.Validate());
+                .Concat(DeadLetterConfigurator.Validate())
+                .Concat(ErrorConfigurator.Validate());
+        }
+
+        IReceivePipe IReceivePipeConfiguration.CreatePipe(IConsumePipe consumePipe, IMessageDeserializer messageDeserializer,
+            Action<IPipeConfigurator<ReceiveContext>> configure)
+        {
+            if (_created)
+                throw new ConfigurationException("The ReceivePipeConfiguration can only be used once.");
+
+            if (configure == null)
+            {
+                DeadLetterConfigurator.UseFilter(new DeadLetterTransportFilter());
+                _configurator.UseDeadLetter(DeadLetterConfigurator.Build());
+
+                ErrorConfigurator.UseFilter(new GenerateFaultFilter());
+                ErrorConfigurator.UseFilter(new ErrorTransportFilter());
+
+                _configurator.UseRescue(ErrorConfigurator.Build(), x =>
+                {
+                    x.Ignore<OperationCanceledException>();
+                });
+            }
+            else
+            {
+                configure(_configurator);
+            }
+
+            _configurator.UseFilter(new DeserializeFilter(messageDeserializer, consumePipe));
+
+            _created = true;
+
+            return new ReceivePipe(_configurator.Build(), consumePipe);
+        }
+
+        public IPipe<ReceiveContext> Build()
+        {
+            return _configurator.Build();
         }
     }
 }
